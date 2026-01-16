@@ -1,1 +1,39 @@
-/data/
+# --------------------
+# Python
+# --------------------
+__pycache__/
+*.py[cod]
+
+# --------------------
+# Virtual environment
+# --------------------
+.venv/
+venv/
+ENV/
+
+# --------------------
+# Data (НЕ коммитим большие и генерируемые данные)
+# --------------------
+data/
+
+# --------------------
+# Generated outputs
+# --------------------
+outputs/generation_log.txt
+outputs/*.html
+outputs/*.png
+outputs/*.csv
+
+# --------------------
+# Temporary / debug scripts
+# --------------------
+tmp_*.py
+
+# --------------------
+# OS / IDE
+# --------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
