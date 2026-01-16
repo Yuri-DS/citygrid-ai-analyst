@@ -1,0 +1,53 @@
+# configs/citygrid_generation.yaml
+# CityGrid synthetic dataset generation config
+
+seed: 42
+
+# small | medium | large
+scale: medium
+
+# Period settings
+days: 7
+step_hours: 1
+
+# Output paths
+db_path: data/citygrid.db
+export_csv: true
+exports_dir: data/exports
+
+docs_dir: docs_workspace
+log_path: outputs/generation_log.txt
+
+# Optional knobs (not all are exposed via CLI in the current build_db.py,
+# but you can wire them in later if needed)
+city_bbox:
+  lat_min: 55.60
+  lat_max: 55.90
+  lon_min: 37.40
+  lon_max: 37.90
+
+quality:
+  # fraction of sensors that get a downtime window
+  missing_rate_min: 0.03
+  missing_rate_max: 0.07
+  # downtime window duration in hours
+  missing_window_hours_min: 6
+  missing_window_hours_max: 48
+
+  # fraction of sensors that get rare anomaly spikes
+  suspect_rate_min: 0.01
+  suspect_rate_max: 0.02
+  suspect_points_min: 2
+  suspect_points_max: 7
+
+acceptance:
+  min_districts: 10
+  min_objects_with_coords: 1000
+  min_events: 10
+  min_noise_complaint: 1000
+  min_parking_issue: 1000
+
+exports:
+  # Keep huge time series exports off by default
+  export_sensor_readings: false
+  export_meter_readings: false
