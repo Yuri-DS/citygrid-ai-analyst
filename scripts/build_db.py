@@ -1271,55 +1271,85 @@ def apply_quality_policy(
     vals: np.ndarray,
     q: np.ndarray,
     anomaly: np.ndarray,
-    missing_window: Optional[Tuple[int, int]],
+    missing_windows: Optional[List[Tuple[int, int]]],
     spikes: Optional[List[int]],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    T = vals.shape[0]
+    """
+    vals: значения длины T
+    q: int8 коды качества (0 ok, 1 missing, 2 suspect)
+    anomaly: float anomaly_score длины T
 
-    # missing window
-    if missing_window is not None:
-        s_i, e_i = missing_window
-        s_i = int(clamp(s_i, 0, T))
-        e_i = int(clamp(e_i, 0, T))
-        if e_i > s_i:
-            q[s_i:e_i] = 1  # missing
-            vals[s_i:e_i] = 0.0
-            anomaly[s_i:e_i] = 0.0
+    missing_windows: список окон [(start_i, end_i), ...] в индексах времени (end_i не включительно)
+    spikes: список индексов точек (suspect)
 
-    # spikes -> suspect
+    Правила:
+    - missing: value=0.0, anomaly_score=0.0
+    - ok: anomaly_score=0.0
+    - suspect: anomaly_score>0, считается через robust z-score (median/MAD окно 24)
+    """
+    T = int(vals.shape[0])
+
+    # 1) Apply missing windows (может быть несколько)
+    if missing_windows:
+        for (s_i, e_i) in missing_windows:
+            s_i = int(clamp(s_i, 0, T))
+            e_i = int(clamp(e_i, 0, T))
+            if e_i > s_i:
+                q[s_i:e_i] = 1  # missing
+                vals[s_i:e_i] = 0.0
+                anomaly[s_i:e_i] = 0.0
+
+    # 2) Apply suspect spikes (но не поверх missing)
+    applied_spikes: List[int] = []
     if spikes:
         for idx in spikes:
-            if 0 <= idx < T:
+            idx = int(idx)
+            if 0 <= idx < T and q[idx] != 1:  # не трогаем missing
                 q[idx] = 2  # suspect
-                # spike magnitude: multiplicative for non-temp
+                # spike magnitude: мультипликативный всплеск + шум
                 amp = float(rng.uniform(1.6, 3.2))
                 vals[idx] = float(vals[idx] * amp + rng.normal(0.0, 1.5))
+                applied_spikes.append(idx)
 
-        # anomaly_score based on rolling median/mad 24h
-        # missing для расчета делаем NaN, чтобы не ломать медиану
+    # 3) anomaly_score for suspect via rolling median/MAD (24h)
+    # Для расчета "пропуски" исключаем через NaN
+    if applied_spikes:
         v_for_calc = vals.astype(float).copy()
-        v_for_calc[q == 1] = np.nan
+        v_for_calc[q == 1] = np.nan  # missing -> NaN
 
         s = pd.Series(v_for_calc)
+
+        # rolling median and MAD (median absolute deviation)
         med = s.rolling(window=24, min_periods=12, center=True).median()
         mad = (s - med).abs().rolling(window=24, min_periods=12, center=True).median()
 
         eps = 1e-6
-        K = 6.0
-        for idx in spikes:
-            if 0 <= idx < T and q[idx] == 2:
-                m = float(med.iloc[idx]) if pd.notna(med.iloc[idx]) else float(np.nanmedian(v_for_calc))
-                d = float(mad.iloc[idx]) if pd.notna(mad.iloc[idx]) else float(np.nanmedian(np.abs(v_for_calc - m)))
-                d = max(d, eps)
-                score = abs(float(vals[idx]) - m) / (d + eps) / K
-                score = float(min(1.0, max(0.05, score)))  # >0
-                anomaly[idx] = score
+        K = 6.0  # нормировка
+        global_med = float(np.nanmedian(v_for_calc)) if np.any(~np.isnan(v_for_calc)) else 0.0
 
-    # ok/missing -> 0
-    anomaly[q == 0] = 0.0
-    anomaly[q == 1] = 0.0
+        # global MAD fallback
+        global_mad = float(np.nanmedian(np.abs(v_for_calc - global_med))) if np.any(~np.isnan(v_for_calc)) else 1.0
+        global_mad = max(global_mad, eps)
+
+        for idx in applied_spikes:
+            m = med.iloc[idx]
+            d = mad.iloc[idx]
+
+            m_val = float(m) if pd.notna(m) else global_med
+            d_val = float(d) if pd.notna(d) else global_mad
+            d_val = max(d_val, eps)
+
+            score = abs(float(vals[idx]) - m_val) / (d_val + eps) / K
+            # требование: suspect -> >0, но <=1
+            score = float(min(1.0, max(0.05, score)))
+            anomaly[idx] = score
+
+    # 4) enforce strict consistency
+    anomaly[q == 0] = 0.0  # ok
+    anomaly[q == 1] = 0.0  # missing
 
     return vals, q, anomaly
+
 
 
 def insert_df(conn: sqlite3.Connection, table: str, df: pd.DataFrame) -> None:
@@ -1677,19 +1707,24 @@ def gen_sensor_readings_and_insert(
             dt_idx=dt_idx,
         )
 
-        missing_window = None
-        spikes = None
-
+        missing_windows = None
         if sid in missing_sids:
-            win_h = int(rng.integers(quality_cfg.missing_window_hours_min, quality_cfg.missing_window_hours_max + 1))
-            start_i = int(rng.integers(0, max(T - win_h, 1)))
-            missing_window = (start_i, start_i + win_h)
+            n_windows = int(rng.integers(2, 5))  # 2-4 окна
+            missing_windows = []
+            for _ in range(n_windows):
+                win_h = int(rng.integers(
+                    quality_cfg.missing_window_hours_min,
+                    quality_cfg.missing_window_hours_max + 1
+                ))
+                start_i = int(rng.integers(0, max(T - win_h, 1)))
+                missing_windows.append((start_i, start_i + win_h))
 
+        spikes = None
         if sid in suspect_sids:
-            n_spikes = int(rng.integers(1, 6))
+            n_spikes = int(rng.integers(6, 21))  # 6-20
             spikes = rng.integers(0, T, size=n_spikes).tolist()
 
-        vals, q, anomaly = apply_quality_policy(rng, vals, q, anomaly, missing_window, spikes)
+        vals, q, anomaly = apply_quality_policy(rng, vals, q, anomaly, missing_windows, spikes)
 
         # write rows
         # q code -> string
