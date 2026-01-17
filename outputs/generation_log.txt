@@ -1,42 +1,13 @@
-CityGrid generation log
-generated_at: 2026-01-16 12:30:09
-seed: 42
-scale: medium
-days: 2
-step_hours: 1
-timeline_points: 49
-districts: 10
-city_objects: 2000
-sensors: 3500
-smart_meters: 1600
-municipal_events: 350
-sensor_readings: generating...
-sensor_readings: 171500
-meter_readings: generating...
-meter_readings: 78400
-citizen_requests: 70000
-public_transport_trips: 300000
-docs_workspace: D:\CityGrid AI Analyst\docs_workspace
-csv_exports_dir: D:\CityGrid AI Analyst\data\exports
-
-VALIDATION:
-count_citizen_requests: 70000
-count_city_objects: 2000
-count_districts: 10
-count_meter_readings: 78400
-count_municipal_events: 350
-count_public_transport_trips: 300000
-count_sensor_readings: 171500
-count_sensors: 3500
-count_smart_meters: 1600
-ok_has_missing: True
-ok_min_districts: True
-ok_min_events: True
-ok_min_noise_complaint: True
-ok_min_objects_with_coords: True
-ok_min_parking_issue: True
-ok_query_corr_noise_vs_complaints: True
-ok_query_event_impact_traffic: True
-ok_query_punctuality_by_route: True
-ok_query_top_districts_requests_30d: True
-ok_sensor_coverage_all_districts: True
+[2026-01-17 03:37:23] START build_db
+[2026-01-17 03:37:23] config=configs\citygrid_generation.yaml
+[2026-01-17 03:37:23] seed=42, start_date=2024-01-01, days=90, step_hours=1, scale=medium
+[2026-01-17 03:37:23] DB initialized
+[2026-01-17 03:37:23] districts inserted: 10
+[2026-01-17 03:37:24] city_objects inserted: 2000
+[2026-01-17 03:37:24] sensors inserted: 3000
+[2026-01-17 03:37:24] smart_meters inserted: 1200
+[2026-01-17 03:37:24] municipal_events inserted: 300
+[2026-01-17 03:37:24] district time models built
+[2026-01-17 03:37:24] sensor impacts built
+[2026-01-17 03:38:21] citizen_requests inserted: 40000
+[2026-01-17 03:39:52] public_transport_trips inserted: 200000
