@@ -1,0 +1,20 @@
+{
+  "seed": 42,
+  "start_date": "2024-01-01",
+  "days": 90,
+  "step_hours": 1,
+  "scale": "medium",
+  "timezone": "GMT+3",
+  "counts": {
+    "districts": 10,
+    "nodes": 250,
+    "objects": 2000,
+    "road_segments": 600,
+    "sensors": 3000,
+    "meters": 1200,
+    "events": 300,
+    "requests": 40000,
+    "trips": 200000,
+    "time_points": 2160
+  }
+}
