@@ -1,16 +1,29 @@
 generation:
   seed: 42
   start_date: "2024-01-01"
-  days: 90
+  days: 90  # Для тестирования используем Medium (90 дней вместо 730)
   step_hours: 1
-  scale: "medium"
+  scale: "medium"  # Тестируем на medium, потом можно поменять на extra-large
   timezone: "GMT+3"
+
+  # Опции для больших периодов (> 180 дней)
+  chunk_size_days: 30
+  enable_streaming: true
+  max_chunk_size_mb: 500
+
+  # Долгосрочные тренды
+  enable_long_term_trends: true
+  traffic_growth_percent_per_year: 2.5
+  infrastructure_degradation_percent_per_year: 1.0
+  sensor_improvement_percent_per_year: 0.5
 
 output:
   sqlite_path: "./data/citygrid.db"
   csv_dir: "./data/exports"
   log_file: "./outputs/generation_log.txt"
+  progress_file: "./outputs/generation_progress.log"
   docs_dir: "./docs_workspace"
+  performance_metrics: "./outputs/performance_metrics.json"
 
 geography:
   city_bounds:
@@ -18,6 +31,42 @@ geography:
     lat_max: 55.90
     lon_min: 37.40
     lon_max: 37.90
+  climate_zone: "temperate"  # temperate, continental, subtropical
+
+  # Генерация геометрии районов
+  generate_district_geometries: true
+  geometry_type: "voronoi"  # voronoi, circles, polygons
+
+road_network:
+  generation_algorithm: "triangulation"  # triangulation, centroid_based
+  min_nodes_per_district: 3
+  max_nodes_per_district: 5
+  connect_important_objects: true
+
+  # Диапазоны скоростей (км/ч)
+  highway_speed_range: [90, 110]
+  arterial_speed_range: [60, 80]
+  local_speed_range: [30, 50]
+  alley_speed_range: [20, 30]
+
+  # Вероятности направлений
+  direction_probabilities:
+    both: 0.9
+    forward: 0.05
+    backward: 0.05
+
+  # Состояние дорог по уровню дохода района
+  condition_by_income:
+    high: [0.7, 0.25, 0.05]    # [good, fair, poor]
+    medium: [0.5, 0.35, 0.15]
+    low: [0.3, 0.45, 0.25]
+
+  # Количество полос по типу дороги
+  lanes_by_type:
+    highway: [2, 3, 4]
+    arterial: [1, 2, 3]
+    local: [1, 2]
+    alley: [1]
 
 quality:
   missing_sensor_share_min: 0.03
@@ -26,3 +75,45 @@ quality:
   missing_window_hours_max: 48
   suspect_sensor_share_min: 0.01
   suspect_sensor_share_max: 0.02
+
+  # Сезонные эффекты качества данных
+  winter_missing_multiplier: 1.5
+  summer_suspect_multiplier: 1.3
+
+events:
+  # Распределение типов событий
+  type_probabilities:
+    concert: 0.15
+    construction: 0.25
+    accident: 0.20
+    protest: 0.10
+    festival: 0.15
+    sports_event: 0.15
+
+  # Долгосрочные события (для периодов > 180 дней)
+  enable_seasonal_events: true
+  annual_festivals: 3
+  seasonal_construction: true
+
+temporal:
+  # Настройки временных рядов
+  enable_annual_seasonality: true
+  enable_monthly_patterns: true
+  enable_holiday_effects: true
+
+  # Праздничные дни (фиксированные)
+  fixed_holidays:
+    - "01-01"  # Новый год
+    - "01-02"  # Новогодние каникулы
+    - "01-03"  # Новогодние каникулы
+    - "01-04"  # Новогодние каникулы
+    - "01-05"  # Новогодние каникулы
+    - "01-06"  # Новогодние каникулы
+    - "01-07"  # Рождество
+    - "01-08"  # Новогодние каникулы
+    - "02-23"  # День защитника Отечества
+    - "03-08"  # Международный женский день
+    - "05-01"  # День труда
+    - "05-09"  # День Победы
+    - "06-12"  # День России
+    - "11-04"  # День народного единства
