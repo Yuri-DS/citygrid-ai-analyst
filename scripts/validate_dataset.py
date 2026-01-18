@@ -710,7 +710,7 @@ JOIN sensors s ON s.sensor_id=sr.sensor_id
 JOIN city_objects o ON o.object_id=s.object_id
 JOIN municipal_events e ON e.district_id=o.district_id
 WHERE e.event_id=1
-  AND sr.ts BETWEEN e.start_ts AND e.end_ts
+  AND sr.ts BETWEEN e.start_ts AND e.end_ts 
   AND sr.quality_flag='ok';
 
 -- Route punctuality
