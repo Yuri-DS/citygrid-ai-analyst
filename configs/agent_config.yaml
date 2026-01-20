@@ -1,0 +1,46 @@
+# ==========================================
+# CityGrid AI Analyst - Agent Configuration
+# ==========================================
+
+# === LLM Settings ===
+llm:
+  # Provider: "ollama" or "openai"
+  provider: "ollama"
+  
+  # Model name
+  model: "llama3.1:8b"
+  
+  # Ollama server URL (if using ollama)
+  ollama_base_url: "http://localhost:11434"
+  
+  # Temperature (0.0 - 1.0, lower = more deterministic)
+  temperature: 0.1
+  
+  # Max tokens in response
+  max_tokens: 2048
+
+# === Database Settings ===
+database:
+  path: "data/citygrid.db"
+  query_timeout: 60
+  max_rows: 50000
+  default_limit: 1000
+
+# === SQL Validation ===
+sql_validation:
+  enabled: true
+  require_time_filter_for_large_tables: true
+  large_tables:
+    - sensor_readings
+    - meter_readings
+
+# === Agent Behavior ===
+agent:
+  # Max iterations in ReAct loop
+  max_iterations: 10
+  
+  # Show reasoning steps in UI
+  show_reasoning: true
+  
+  # Verbose logging
+  verbose: true
