@@ -3,7 +3,7 @@
 **Note:** This is a fast validation that skips heavy aggregations.
 For full validation, use `validate_dataset.py`
 
-- DB: `D:\CityGrid AI Analyst\data\citygrid.db`
+- DB: `C:\Users\1\PycharmProjects\citygrid-ai-analyst\data\citygrid.db`
 - Scale: `medium`
 - Period: 90 days
 
