@@ -7,10 +7,11 @@ ReAct-style agent that can query the database and analyze results.
 from typing import Annotated, TypedDict, Sequence
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_ollama import ChatOllama
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 from langgraph.graph.message import add_messages
+from datetime import datetime
+import json
 
 import sys
 from pathlib import Path
@@ -20,6 +21,89 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.tools import SQL_TOOLS
 from agent.prompts import SYSTEM_PROMPT
+
+
+# === Logging ===
+
+class AgentLogger:
+    """Logger for agent actions."""
+    
+    def __init__(self, verbose: bool = True):
+        self.verbose = verbose
+        self.logs = []
+    
+    def log(self, event_type: str, data: dict):
+        """Log an event."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        entry = {
+            "timestamp": timestamp,
+            "type": event_type,
+            "data": data
+        }
+        self.logs.append(entry)
+        
+        if self.verbose:
+            self._print_log(entry)
+    
+    def _print_log(self, entry: dict):
+        """Print log entry to console."""
+        t = entry["timestamp"]
+        event_type = entry["type"]
+        data = entry["data"]
+        
+        print(f"\n{'='*60}")
+        print(f"[{t}] {event_type.upper()}")
+        print('='*60)
+        
+        if event_type == "user_input":
+            print(f"Question: {data.get('question', '')}")
+        
+        elif event_type == "llm_input":
+            print(f"Messages count: {data.get('message_count', 0)}")
+            print(f"Last message type: {data.get('last_message_type', '')}")
+            if data.get('last_message_content'):
+                content = data['last_message_content']
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                print(f"Last message: {content}")
+        
+        elif event_type == "llm_output":
+            print(f"Response type: {data.get('response_type', '')}")
+            if data.get('content'):
+                content = data['content']
+                if len(content) > 500:
+                    content = content[:500] + "..."
+                print(f"Content: {content}")
+            if data.get('tool_calls'):
+                print(f"Tool calls: {json.dumps(data['tool_calls'], indent=2, ensure_ascii=False)}")
+        
+        elif event_type == "tool_call":
+            print(f"Tool: {data.get('tool_name', '')}")
+            print(f"Arguments: {json.dumps(data.get('arguments', {}), indent=2, ensure_ascii=False)}")
+        
+        elif event_type == "tool_result":
+            print(f"Tool: {data.get('tool_name', '')}")
+            result = data.get('result', '')
+            if isinstance(result, str) and len(result) > 500:
+                result = result[:500] + "..."
+            print(f"Result: {result}")
+        
+        elif event_type == "decision":
+            print(f"Next step: {data.get('next_step', '')}")
+            print(f"Reason: {data.get('reason', '')}")
+        
+        elif event_type == "final_answer":
+            print(f"Answer: {data.get('answer', '')}")
+        
+        print()
+    
+    def get_logs(self) -> list[dict]:
+        """Get all logs."""
+        return self.logs.copy()
+    
+    def clear(self):
+        """Clear logs."""
+        self.logs = []
 
 
 # === Agent State ===
@@ -44,9 +128,11 @@ class CityGridAgent:
         ollama_base_url: str = "http://localhost:11434",
         temperature: float = 0.1,
         max_iterations: int = 10,
+        verbose: bool = True,
     ):
         self.model_name = model_name
         self.max_iterations = max_iterations
+        self.logger = AgentLogger(verbose=verbose)
         
         # Initialize LLM
         self.llm = ChatOllama(
@@ -70,7 +156,7 @@ class CityGridAgent:
         
         # Add nodes
         graph.add_node("agent", self._agent_node)
-        graph.add_node("tools", ToolNode(self.tools))
+        graph.add_node("tools", self._tools_node)
         
         # Add edges
         graph.set_entry_point("agent")
@@ -90,6 +176,14 @@ class CityGridAgent:
         """Agent reasoning node - decides what to do next."""
         messages = state["messages"]
         
+        # Log input to LLM
+        last_msg = messages[-1] if messages else None
+        self.logger.log("llm_input", {
+            "message_count": len(messages),
+            "last_message_type": type(last_msg).__name__ if last_msg else None,
+            "last_message_content": last_msg.content if last_msg else None,
+        })
+        
         # Add system prompt if first message
         if len(messages) == 1 and isinstance(messages[0], HumanMessage):
             system_message = ("system", SYSTEM_PROMPT)
@@ -97,7 +191,75 @@ class CityGridAgent:
         else:
             response = self.llm_with_tools.invoke(messages)
         
+        # Log LLM output
+        tool_calls = None
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            tool_calls = [
+                {"name": tc["name"], "args": tc["args"]}
+                for tc in response.tool_calls
+            ]
+        
+        self.logger.log("llm_output", {
+            "response_type": type(response).__name__,
+            "content": response.content,
+            "tool_calls": tool_calls,
+        })
+        
         return {"messages": [response]}
+    
+    def _tools_node(self, state: AgentState) -> dict:
+        """Execute tools and log results."""
+        messages = state["messages"]
+        last_message = messages[-1]
+        
+        results = []
+        
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            for tool_call in last_message.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call["args"]
+                
+                # Log tool call
+                self.logger.log("tool_call", {
+                    "tool_name": tool_name,
+                    "arguments": tool_args,
+                })
+                
+                # Find and execute tool
+                tool_fn = None
+                for tool in self.tools:
+                    if tool.name == tool_name:
+                        tool_fn = tool
+                        break
+                
+                if tool_fn:
+                    result = tool_fn.invoke(tool_args)
+                    
+                    # Log result
+                    result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+                    self.logger.log("tool_result", {
+                        "tool_name": tool_name,
+                        "result": result_str[:1000],  # Truncate for logging
+                    })
+                    
+                    results.append(ToolMessage(
+                        content=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
+                        name=tool_name,
+                        tool_call_id=tool_call["id"],
+                    ))
+                else:
+                    error_msg = f"Tool not found: {tool_name}"
+                    self.logger.log("tool_result", {
+                        "tool_name": tool_name,
+                        "result": error_msg,
+                    })
+                    results.append(ToolMessage(
+                        content=error_msg,
+                        name=tool_name,
+                        tool_call_id=tool_call["id"],
+                    ))
+        
+        return {"messages": results}
     
     def _should_continue(self, state: AgentState) -> str:
         """Decide whether to continue with tools or end."""
@@ -106,9 +268,17 @@ class CityGridAgent:
         
         # If LLM wants to use tools, continue
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            self.logger.log("decision", {
+                "next_step": "tools",
+                "reason": f"LLM requested {len(last_message.tool_calls)} tool(s)",
+            })
             return "tools"
         
         # Otherwise, end
+        self.logger.log("decision", {
+            "next_step": "end",
+            "reason": "LLM provided final answer",
+        })
         return "end"
     
     def invoke(self, question: str) -> dict:
@@ -119,8 +289,14 @@ class CityGridAgent:
             question: User's question in natural language
             
         Returns:
-            Dict with 'answer', 'messages', and 'steps'
+            Dict with 'answer', 'messages', 'steps', and 'logs'
         """
+        # Clear previous logs
+        self.logger.clear()
+        
+        # Log user input
+        self.logger.log("user_input", {"question": question})
+        
         # Initial state
         initial_state = {
             "messages": [HumanMessage(content=question)]
@@ -136,10 +312,14 @@ class CityGridAgent:
         # Get final answer
         final_answer = messages[-1].content if messages else "No answer generated"
         
+        # Log final answer
+        self.logger.log("final_answer", {"answer": final_answer[:500]})
+        
         return {
             "answer": final_answer,
             "messages": messages,
             "steps": steps,
+            "logs": self.logger.get_logs(),
         }
     
     def stream(self, question: str):
@@ -152,6 +332,9 @@ class CityGridAgent:
         Yields:
             Dict with current state and step info
         """
+        self.logger.clear()
+        self.logger.log("user_input", {"question": question})
+        
         initial_state = {
             "messages": [HumanMessage(content=question)]
         }
@@ -194,7 +377,8 @@ class CityGridAgent:
 
 def create_agent(
     model_name: str = "llama3.1:8b",
+    verbose: bool = True,
     **kwargs
 ) -> CityGridAgent:
     """Create a CityGrid agent instance."""
-    return CityGridAgent(model_name=model_name, **kwargs)
+    return CityGridAgent(model_name=model_name, verbose=verbose, **kwargs)
