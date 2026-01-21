@@ -14,7 +14,7 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from database import get_connection, validate_sql, safe_sql
+from database import get_connection, validate_sql
 
 
 # === Schema Description for LLM ===
@@ -67,24 +67,24 @@ CityGrid Database Schema:
 def execute_sql(query: str) -> dict[str, Any]:
     """
     Execute a SQL query against the CityGrid database.
-    
+
     Use this tool to retrieve data from the database. Only SELECT queries are allowed.
     For large tables (sensor_readings, meter_readings), you MUST include a time filter.
-    
+
     Args:
         query: SQL SELECT query to execute
-        
+
     Returns:
         Dictionary with 'success', 'data' (list of records), 'row_count', and optionally 'error'
-    
+
     Example queries:
         - "SELECT * FROM districts LIMIT 10"
         - "SELECT sensor_type, COUNT(*) FROM sensors GROUP BY sensor_type"
         - "SELECT * FROM sensor_readings WHERE ts >= '2024-01-01' AND ts < '2024-01-02' LIMIT 100"
     """
     # Validate and add limit
-    safe_query, validation = safe_sql(query, add_limit=True)
-    
+    safe_query, validation = validate_sql(query, add_limit=True)
+
     if not validation.is_valid:
         return {
             "success": False,
@@ -92,11 +92,11 @@ def execute_sql(query: str) -> dict[str, Any]:
             "data": [],
             "row_count": 0
         }
-    
+
     # Execute query
     conn = get_connection()
     df, error = conn.execute(safe_query, validate=False)  # Already validated
-    
+
     if error:
         return {
             "success": False,
@@ -104,10 +104,10 @@ def execute_sql(query: str) -> dict[str, Any]:
             "data": [],
             "row_count": 0
         }
-    
+
     # Convert to records
     records = df.to_dict("records")
-    
+
     return {
         "success": True,
         "data": records,
@@ -121,27 +121,27 @@ def execute_sql(query: str) -> dict[str, Any]:
 def get_schema() -> str:
     """
     Get the database schema description.
-    
+
     Use this tool to understand what tables and columns are available
     before writing SQL queries.
-    
+
     Returns:
         String description of all tables and their columns.
     """
     return SCHEMA_DESCRIPTION
 
 
-@tool  
+@tool
 def get_table_sample(table_name: str) -> dict[str, Any]:
     """
     Get sample rows from a specific table.
-    
+
     Use this tool to see example data and understand the format of values
     in a table before writing complex queries.
-    
+
     Args:
         table_name: Name of the table to sample
-        
+
     Returns:
         Dictionary with sample data from the table
     """
@@ -151,24 +151,24 @@ def get_table_sample(table_name: str) -> dict[str, Any]:
         "smart_meters", "sensor_readings", "meter_readings",
         "municipal_events", "citizen_requests", "public_transport_trips"
     }
-    
+
     if table_name.lower() not in allowed_tables:
         return {
             "success": False,
             "error": f"Unknown table: {table_name}. Allowed: {', '.join(sorted(allowed_tables))}",
             "data": []
         }
-    
+
     conn = get_connection()
     df = conn.get_table_sample(table_name.lower(), limit=5)
-    
+
     if df is None:
         return {
             "success": False,
             "error": f"Failed to get sample from {table_name}",
             "data": []
         }
-    
+
     return {
         "success": True,
         "data": df.to_dict("records"),
