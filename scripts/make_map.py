@@ -39,10 +39,11 @@ def create_citygrid_map():
     print("Loading districts...")
     districts = pd.read_sql_query("""
         SELECT district_id, name, type, center_lat, center_lon, 
-               population, density, income_level
+               population, density, income_level, geometry
         FROM districts
     """, conn)
 
+    print(districts['geometry'])
     center_lat = districts.center_lat.mean()
     center_lon = districts.center_lon.mean()
 
@@ -66,28 +67,109 @@ def create_citygrid_map():
         'educational': '#f39c12'  # orange
     }
 
+    def _extract_polygons_from_wkt(wkt_str):
+        """Return list of polygons, each polygon is [[lat, lon], ...] (outer ring only).
+        Supports POLYGON and MULTIPOLYGON WKT. Returns [] if parsing fails."""
+        if not isinstance(wkt_str, str) or not wkt_str.strip():
+            return []
+
+        wkt_str = wkt_str.strip()
+
+        # 1) Try Shapely (recommended)
+        try:
+            from shapely import wkt as _sh_wkt
+
+            geom = _sh_wkt.loads(wkt_str)
+            if geom.is_empty:
+                return []
+
+            if geom.geom_type == "Polygon":
+                coords = list(geom.exterior.coords)
+                return [[[lat, lon] for lon, lat in coords]]
+
+            if geom.geom_type == "MultiPolygon":
+                polys = []
+                for poly in geom.geoms:
+                    coords = list(poly.exterior.coords)
+                    polys.append([[lat, lon] for lon, lat in coords])
+                return polys
+        except Exception:
+            pass
+
+        # 2) Fallback parser for simple POLYGON((lon lat, ...))
+        if wkt_str.upper().startswith("POLYGON"):
+            try:
+                inner = wkt_str[wkt_str.find("((") + 2: wkt_str.rfind("))")]
+                outer = inner.split("),(")[0]
+                pts = []
+                for token in outer.split(","):
+                    parts = token.strip().split()
+                    if len(parts) >= 2:
+                        lon = float(parts[0])
+                        lat = float(parts[1])
+                        pts.append([lat, lon])
+                return [pts] if pts else []
+            except Exception:
+                return []
+
+        return []
+
     for _, d in districts.iterrows():
-        folium.CircleMarker(
-            location=[d['center_lat'], d['center_lon']],
-            radius=15,
-            popup=folium.Popup(
-                f"<b>{d['name']}</b><br>"
-                f"Type: {d['type']}<br>"
-                f"Population: {d['population']:,}<br>"
-                f"Density: {d['density']}<br>"
-                f"Income: {d['income_level']}",
-                max_width=200
-            ),
-            tooltip=d['name'],
-            color=district_colors.get(d['type'], '#000000'),
-            fill=True,
-            fillColor=district_colors.get(d['type'], '#000000'),
-            fillOpacity=0.3,
-            weight=2
-        ).add_to(districts_layer)
+        popup_html = (
+            f"<b>{d['name']}</b><br>"
+            f"Type: {d['type']}<br>"
+            f"Population: {d['population']:,}<br>"
+            f"Density: {d['density']}<br>"
+            f"Income: {d['income_level']}"
+        )
+
+        color = district_colors.get(d['type'], '#000000')
+        polygons = _extract_polygons_from_wkt(d.get('geometry'))
+
+        if polygons:
+            # Draw district polygons
+            for poly_locations in polygons:
+                folium.Polygon(
+                    locations=poly_locations,
+                    popup=folium.Popup(popup_html, max_width=250),
+                    tooltip=d['name'],
+                    color=color,
+                    weight=2,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.25,
+                ).add_to(districts_layer)
+
+            # Small marker in the center for readability
+            folium.CircleMarker(
+                location=[d['center_lat'], d['center_lon']],
+                radius=3,
+                popup=folium.Popup(popup_html, max_width=250),
+                tooltip=d['name'],
+                color=color,
+                fill=True,
+                fillColor=color,
+                fillOpacity=0.9,
+                weight=1,
+            ).add_to(districts_layer)
+
+        else:
+            # Fallback: if geometry is missing/invalid
+            print('Fallback')
+            folium.CircleMarker(
+                location=[d['center_lat'], d['center_lon']],
+                radius=15,
+                popup=folium.Popup(popup_html, max_width=200),
+                tooltip=d['name'],
+                color=color,
+                fill=True,
+                fillColor=color,
+                fillOpacity=0.3,
+                weight=2,
+            ).add_to(districts_layer)
 
     districts_layer.add_to(m)
-
+    # print(districts_layer)
     # ===== 3. ROAD NETWORK NODES LAYER =====
     print("Loading road network nodes...")
     nodes = pd.read_sql_query("""
