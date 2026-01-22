@@ -23,7 +23,8 @@ DB_PATH = Path(__file__).parent / "data" / "citygrid.db"
 st.set_page_config(
     page_title="CityGrid AI Analyst",
     page_icon="🏙️",
-    layout="wide"
+    layout="wide",
+    theme="dark"
 )
 
 # === Initialize ===
