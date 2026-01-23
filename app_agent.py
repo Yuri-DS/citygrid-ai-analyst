@@ -19,6 +19,15 @@ from agent import create_agent
 # === Configuration ===
 DB_PATH = Path(__file__).parent / "data" / "citygrid.db"
 
+# Available models for selection (ordered by recommendation)
+AVAILABLE_MODELS = {
+    "qwen2.5:7b": "Qwen 2.5 7B - Best for tool calling ⭐",
+    "qwen2.5:14b": "Qwen 2.5 14B - Most capable, needs 10GB+ RAM",
+    "llama3.1:8b": "Llama 3.1 8B - Good general model",
+    "mistral": "Mistral 7B - Fast and capable",
+    "llama3.2:3b": "Llama 3.2 3B - Lightweight, less accurate",
+}
+
 # === Page Config ===
 st.set_page_config(
     page_title="CityGrid AI Analyst",
@@ -33,10 +42,13 @@ def init_database():
     """Initialize database connection."""
     return get_connection(DB_PATH)
 
-@st.cache_resource
-def init_agent():
-    """Initialize the AI agent."""
-    return create_agent(model_name="qwen2.5:7b", verbose=True)
+def get_agent(model_name: str):
+    """Get or create agent for specific model."""
+    # Use session state to cache agent per model
+    cache_key = f"agent_{model_name}"
+    if cache_key not in st.session_state:
+        st.session_state[cache_key] = create_agent(model_name=model_name, verbose=True)
+    return st.session_state[cache_key]
 
 
 # === Session State ===
@@ -45,6 +57,9 @@ if "messages" not in st.session_state:
 
 if "agent_initialized" not in st.session_state:
     st.session_state.agent_initialized = False
+
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = list(AVAILABLE_MODELS.keys())[0]  # Default: qwen2.5:7b
 
 
 # === Helper Functions ===
@@ -97,9 +112,6 @@ def run_agent_with_streaming(agent, prompt: str):
     collected_steps = []
     final_answer = ""
 
-    # Get logs from agent (we'll use invoke but display logs progressively)
-    # For true streaming we need to modify the agent, but this shows the concept
-
     with st.spinner(""):
         result = agent.invoke(prompt)
 
@@ -110,8 +122,11 @@ def run_agent_with_streaming(agent, prompt: str):
             log_type = log.get("type")
             data = log.get("data", {})
 
-            if log_type == "llm_output":
-                # LLM thinking/response
+            # Show fallback parsing info
+            if log_type == "fallback_parse":
+                steps_expander.info(f"🔄 **Fallback:** {data.get('message', '')} - `{data.get('tool', '')}`")
+
+            elif log_type == "llm_output":
                 content = data.get("content", "")
                 tool_calls = data.get("tool_calls")
 
@@ -126,7 +141,6 @@ def run_agent_with_streaming(agent, prompt: str):
                         display_step(step, steps_expander)
 
                 if content and not tool_calls:
-                    # This is the final answer
                     final_answer = content
 
             elif log_type == "tool_result":
@@ -138,7 +152,6 @@ def run_agent_with_streaming(agent, prompt: str):
                 collected_steps.append(step)
                 display_step(step, steps_expander)
 
-        # Display final answer
         final_answer = result.get("answer", "No answer generated")
         answer_placeholder.markdown(final_answer)
 
@@ -172,16 +185,41 @@ with st.sidebar:
 
     st.divider()
 
-    # Agent status
+    # Model selection
     st.header("🤖 Agent")
+
+    model_names = list(AVAILABLE_MODELS.keys())
+    model_descriptions = list(AVAILABLE_MODELS.values())
+
+    # Get current index
+    current_model = st.session_state.selected_model
+    current_index = model_names.index(current_model) if current_model in model_names else 0
+
+    selected_model = st.selectbox(
+        "Select Model",
+        options=model_names,
+        index=current_index,
+        format_func=lambda x: AVAILABLE_MODELS[x],
+        help="Choose LLM model. Qwen 2.5 recommended for best tool calling."
+    )
+
+    # Check if model changed
+    if selected_model != st.session_state.selected_model:
+        st.session_state.selected_model = selected_model
+        st.rerun()
+
+    # Initialize agent with selected model
     try:
-        agent = init_agent()
-        st.success("✅ Agent ready")
-        st.caption(f"Model: llama3.1:8b")
+        with st.spinner(f"Loading {selected_model}..."):
+            agent = get_agent(selected_model)
+        st.success(f"✅ Agent ready")
+        st.caption(f"Model: {selected_model}")
         st.session_state.agent_initialized = True
     except Exception as e:
         st.error(f"❌ Agent Error: {e}")
-        st.caption("Make sure Ollama is running")
+        st.caption("Make sure Ollama is running and model is downloaded")
+        st.code(f"ollama pull {selected_model}", language="bash")
+        st.session_state.agent_initialized = False
 
     st.divider()
 
@@ -191,7 +229,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("CityGrid AI Analyst v0.3")
+    st.caption("CityGrid AI Analyst v0.5")
 
 # Main chat area
 st.header("💬 Chat")
@@ -219,7 +257,7 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
     with st.chat_message("assistant"):
         if st.session_state.agent_initialized:
             try:
-                agent = init_agent()
+                agent = get_agent(st.session_state.selected_model)
                 result = run_agent_with_streaming(agent, prompt)
 
                 # Save to history
