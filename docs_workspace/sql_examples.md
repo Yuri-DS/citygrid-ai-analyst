@@ -74,6 +74,10 @@ FROM citizen_requests
 GROUP BY category, status 
 ORDER BY category, count DESC;
 
+-- Requests by priority
+SELECT priority, COUNT(*) as count 
+FROM citizen_requests GROUP BY priority ORDER BY count DESC;
+
 -- Average resolution time by category
 SELECT category, 
        ROUND(AVG(resolution_hours), 2) as avg_hours,
@@ -144,13 +148,13 @@ ORDER BY avg_delay DESC;
 ### Smart Meters
 
 ```sql
--- Meters by type
-SELECT meter_type, COUNT(*) as count 
-FROM smart_meters GROUP BY meter_type;
+-- Meters by utility type
+SELECT utility_type, unit, COUNT(*) as count 
+FROM smart_meters GROUP BY utility_type, unit;
 
 -- Active meters only
-SELECT meter_type, COUNT(*) as count 
-FROM smart_meters WHERE is_active = 1 GROUP BY meter_type;
+SELECT utility_type, COUNT(*) as count 
+FROM smart_meters WHERE is_active = 1 GROUP BY utility_type;
 ```
 
 ## Time-Series Queries (⚠️ ALWAYS use time filter!)
