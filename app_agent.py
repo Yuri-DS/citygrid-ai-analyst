@@ -1,6 +1,6 @@
 """
 CityGrid AI Analyst - Main Application
-Phase 1: Basic Agent with SQL capabilities + Streaming UI
+Phase 2: RAG + Model Selection + Fixes
 """
 
 import streamlit as st
@@ -8,6 +8,7 @@ import pandas as pd
 from pathlib import Path
 import sys
 import json
+import requests
 
 # Add src to path
 src_path = Path(__file__).parent / "src"
@@ -18,6 +19,7 @@ from agent import create_agent
 
 # === Configuration ===
 DB_PATH = Path(__file__).parent / "data" / "citygrid.db"
+OLLAMA_BASE_URL = "http://localhost:11434"
 
 # Available models for selection (ordered by recommendation)
 AVAILABLE_MODELS = {
@@ -35,16 +37,52 @@ st.set_page_config(
     layout="wide"
 )
 
-# === Initialize ===
+# === Helper Functions ===
+
+def check_ollama_running() -> bool:
+    """Check if Ollama server is running."""
+    try:
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
+        return response.status_code == 200
+    except:
+        return False
+
+
+def get_available_ollama_models() -> list[str]:
+    """Get list of models available in Ollama."""
+    try:
+        response = requests.get(f"{OLLAMA_BASE_URL}/api/tags", timeout=2)
+        if response.status_code == 200:
+            data = response.json()
+            return [model["name"] for model in data.get("models", [])]
+    except:
+        pass
+    return []
+
+
+def is_model_available(model_name: str) -> bool:
+    """Check if specific model is available in Ollama."""
+    available = get_available_ollama_models()
+    # Check exact match or match without tag
+    for m in available:
+        if m == model_name or m.startswith(model_name + ":") or model_name.startswith(m.split(":")[0]):
+            return True
+    # Also check if model_name matches base name
+    base_name = model_name.split(":")[0]
+    for m in available:
+        if m.split(":")[0] == base_name:
+            return True
+    return False
+
 
 @st.cache_resource
 def init_database():
     """Initialize database connection."""
     return get_connection(DB_PATH)
 
+
 def get_agent(model_name: str):
     """Get or create agent for specific model."""
-    # Use session state to cache agent per model
     cache_key = f"agent_{model_name}"
     if cache_key not in st.session_state:
         st.session_state[cache_key] = create_agent(model_name=model_name, verbose=True)
@@ -59,10 +97,10 @@ if "agent_initialized" not in st.session_state:
     st.session_state.agent_initialized = False
 
 if "selected_model" not in st.session_state:
-    st.session_state.selected_model = list(AVAILABLE_MODELS.keys())[0]  # Default: qwen2.5:7b
+    st.session_state.selected_model = list(AVAILABLE_MODELS.keys())[0]
 
 
-# === Helper Functions ===
+# === Display Functions ===
 
 def display_step(step: dict, container):
     """Display a single reasoning step."""
@@ -99,61 +137,72 @@ def display_step(step: dict, container):
             container.markdown(content)
 
 
-def run_agent_with_streaming(agent, prompt: str):
-    """Run agent and display steps in real-time."""
-
-    # Container for streaming steps
-    steps_container = st.container()
-    steps_expander = steps_container.expander("🔍 **Live Reasoning Steps**", expanded=True)
-
-    # Placeholder for final answer
-    answer_placeholder = st.empty()
+def run_agent_with_streaming(agent, prompt: str, container):
+    """Run agent and display steps in real-time (reliable chat rendering)."""
 
     collected_steps = []
-    final_answer = ""
 
-    with st.spinner(""):
-        result = agent.invoke(prompt)
+    with container:
+        with st.spinner("Thinking..."):
+            result = agent.invoke(prompt)
 
-        # Display steps from logs
-        logs = result.get("logs", [])
+        # --- Robust final answer extraction ---
+        if isinstance(result, dict):
+            final_answer = (
+                result.get("answer")
+                or result.get("output")
+                or result.get("final_answer")
+                or result.get("content")
+                or "No answer generated"
+            )
+            logs = result.get("logs") or []
+        else:
+            final_answer = str(result)
+            logs = []
 
-        for log in logs:
-            log_type = log.get("type")
-            data = log.get("data", {})
+        # --- Steps (optional) ---
+        with st.expander("🔍 **Reasoning Steps**", expanded=False):
+            for log in logs:
+                # на случай если logs внезапно строками
+                if not isinstance(log, dict):
+                    st.code(str(log))
+                    continue
 
-            # Show fallback parsing info
-            if log_type == "fallback_parse":
-                steps_expander.info(f"🔄 **Fallback:** {data.get('message', '')} - `{data.get('tool', '')}`")
+                log_type = log.get("type")
+                data = log.get("data", {})
 
-            elif log_type == "llm_output":
-                content = data.get("content", "")
-                tool_calls = data.get("tool_calls")
+                if log_type == "fallback_parse":
+                    st.info(f"🔄 **Fallback:** {data.get('message', '')} - `{data.get('tool', '')}`")
 
-                if tool_calls:
-                    for tc in tool_calls:
-                        step = {
-                            "type": "tool_call",
-                            "tool_name": tc["name"],
-                            "arguments": tc["args"]
-                        }
-                        collected_steps.append(step)
-                        display_step(step, steps_expander)
+                elif log_type == "llm_output":
+                    tool_calls = data.get("tool_calls")
+                    if tool_calls:
+                        for tc in tool_calls:
+                            step = {
+                                "type": "tool_call",
+                                "tool_name": tc.get("name"),
+                                "arguments": tc.get("args", {}),
+                            }
+                            collected_steps.append(step)
+                            display_step(step, st)
 
-                if content and not tool_calls:
-                    final_answer = content
+                elif log_type == "tool_result":
+                    step = {
+                        "type": "tool_result",
+                        "tool_name": data.get("tool_name"),
+                        "result": data.get("result"),
+                    }
+                    collected_steps.append(step)
+                    display_step(step, st)
 
-            elif log_type == "tool_result":
-                step = {
-                    "type": "tool_result",
-                    "tool_name": data.get("tool_name"),
-                    "result": data.get("result")
-                }
-                collected_steps.append(step)
-                display_step(step, steps_expander)
+        # --- Final answer ---
+        st.markdown(final_answer)
 
-        final_answer = result.get("answer", "No answer generated")
-        answer_placeholder.markdown(final_answer)
+    return {"answer": final_answer, "steps": collected_steps}
+
+
+    # Display final answer AFTER the expander
+    st.markdown(final_answer)
 
     return {
         "answer": final_answer,
@@ -188,38 +237,65 @@ with st.sidebar:
     # Model selection
     st.header("🤖 Agent")
 
-    model_names = list(AVAILABLE_MODELS.keys())
-    model_descriptions = list(AVAILABLE_MODELS.values())
+    # Check Ollama status
+    ollama_running = check_ollama_running()
 
-    # Get current index
-    current_model = st.session_state.selected_model
-    current_index = model_names.index(current_model) if current_model in model_names else 0
-
-    selected_model = st.selectbox(
-        "Select Model",
-        options=model_names,
-        index=current_index,
-        format_func=lambda x: AVAILABLE_MODELS[x],
-        help="Choose LLM model. Qwen 2.5 recommended for best tool calling."
-    )
-
-    # Check if model changed
-    if selected_model != st.session_state.selected_model:
-        st.session_state.selected_model = selected_model
-        st.rerun()
-
-    # Initialize agent with selected model
-    try:
-        with st.spinner(f"Loading {selected_model}..."):
-            agent = get_agent(selected_model)
-        st.success(f"✅ Agent ready")
-        st.caption(f"Model: {selected_model}")
-        st.session_state.agent_initialized = True
-    except Exception as e:
-        st.error(f"❌ Agent Error: {e}")
-        st.caption("Make sure Ollama is running and model is downloaded")
-        st.code(f"ollama pull {selected_model}", language="bash")
+    if not ollama_running:
+        st.error("❌ Ollama not running")
+        st.caption("Start Ollama server first:")
+        st.code("ollama serve", language="bash")
         st.session_state.agent_initialized = False
+    else:
+        # Get available models
+        available_ollama_models = get_available_ollama_models()
+
+        model_names = list(AVAILABLE_MODELS.keys())
+
+        # Get current index
+        current_model = st.session_state.selected_model
+        current_index = model_names.index(current_model) if current_model in model_names else 0
+
+        selected_model = st.selectbox(
+            "Select Model",
+            options=model_names,
+            index=current_index,
+            format_func=lambda x: AVAILABLE_MODELS[x],
+            help="Choose LLM model. Qwen 2.5 recommended for best tool calling."
+        )
+
+        # Check if model changed
+        if selected_model != st.session_state.selected_model:
+            old_model = st.session_state.selected_model
+            st.session_state.selected_model = selected_model
+            old_cache_key = f"agent_{old_model}"
+            st.session_state.pop(old_cache_key, None)
+            st.rerun()
+
+        # Check if selected model is available
+        model_available = is_model_available(selected_model)
+
+        if not model_available:
+            st.warning(f"⚠️ Model not found: {selected_model}")
+            st.caption("Download the model first:")
+            st.code(f"ollama pull {selected_model}", language="bash")
+
+            # Show available models
+            if available_ollama_models:
+                with st.expander("📦 Available models"):
+                    for m in available_ollama_models:
+                        st.code(m)
+
+            st.session_state.agent_initialized = False
+        else:
+            # Model is available, initialize agent
+            try:
+                agent = get_agent(selected_model)
+                st.success(f"✅ Agent ready")
+                st.caption(f"Model: {selected_model}")
+                st.session_state.agent_initialized = True
+            except Exception as e:
+                st.error(f"❌ Agent Error: {e}")
+                st.session_state.agent_initialized = False
 
     st.divider()
 
@@ -229,7 +305,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("CityGrid AI Analyst v0.5")
+    st.caption("CityGrid AI Analyst v0.6")
 
 # Main chat area
 st.header("💬 Chat")
@@ -258,9 +334,10 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
         if st.session_state.agent_initialized:
             try:
                 agent = get_agent(st.session_state.selected_model)
-                result = run_agent_with_streaming(agent, prompt)
 
-                # Save to history
+                chat_container = st.container()
+                result = run_agent_with_streaming(agent, prompt, chat_container)
+
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": result["answer"],
