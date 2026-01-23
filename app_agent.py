@@ -138,15 +138,14 @@ def display_step(step: dict, container):
 
 
 def run_agent_with_streaming(agent, prompt: str, container):
-    """Run agent and display steps in real-time (reliable chat rendering)."""
-
+    """Run agent and display steps in real-time."""
     collected_steps = []
 
     with container:
         with st.spinner("Thinking..."):
             result = agent.invoke(prompt)
 
-        # --- Robust final answer extraction ---
+        # Robust final answer extraction
         if isinstance(result, dict):
             final_answer = (
                 result.get("answer")
@@ -160,10 +159,10 @@ def run_agent_with_streaming(agent, prompt: str, container):
             final_answer = str(result)
             logs = []
 
-        # --- Steps (optional) ---
+        # Display reasoning steps in expander
         with st.expander("🔍 **Reasoning Steps**", expanded=False):
             for log in logs:
-                # на случай если logs внезапно строками
+                # Handle case where log is not a dict
                 if not isinstance(log, dict):
                     st.code(str(log))
                     continue
@@ -195,19 +194,10 @@ def run_agent_with_streaming(agent, prompt: str, container):
                     collected_steps.append(step)
                     display_step(step, st)
 
-        # --- Final answer ---
+        # Display final answer
         st.markdown(final_answer)
 
     return {"answer": final_answer, "steps": collected_steps}
-
-
-    # Display final answer AFTER the expander
-    st.markdown(final_answer)
-
-    return {
-        "answer": final_answer,
-        "steps": collected_steps
-    }
 
 
 # === UI ===
@@ -263,7 +253,7 @@ with st.sidebar:
             help="Choose LLM model. Qwen 2.5 recommended for best tool calling."
         )
 
-        # Check if model changed
+        # Check if model changed - clear old agent cache
         if selected_model != st.session_state.selected_model:
             old_model = st.session_state.selected_model
             st.session_state.selected_model = selected_model
@@ -290,7 +280,7 @@ with st.sidebar:
             # Model is available, initialize agent
             try:
                 agent = get_agent(selected_model)
-                st.success(f"✅ Agent ready")
+                st.success("✅ Agent ready")
                 st.caption(f"Model: {selected_model}")
                 st.session_state.agent_initialized = True
             except Exception as e:
@@ -305,7 +295,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("CityGrid AI Analyst v0.6")
+    st.caption("CityGrid AI Analyst v0.7")
 
 # Main chat area
 st.header("💬 Chat")
@@ -329,12 +319,11 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Get agent response with streaming
+    # Get agent response
     with st.chat_message("assistant"):
         if st.session_state.agent_initialized:
             try:
                 agent = get_agent(st.session_state.selected_model)
-
                 chat_container = st.container()
                 result = run_agent_with_streaming(agent, prompt, chat_container)
 
