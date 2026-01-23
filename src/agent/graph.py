@@ -19,7 +19,7 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from agent.tools import SQL_TOOLS
+from agent.tools import ALL_TOOLS
 from agent.prompts import SYSTEM_PROMPT
 
 
@@ -27,11 +27,11 @@ from agent.prompts import SYSTEM_PROMPT
 
 class AgentLogger:
     """Logger for agent actions."""
-    
+
     def __init__(self, verbose: bool = True):
         self.verbose = verbose
         self.logs = []
-    
+
     def log(self, event_type: str, data: dict):
         """Log an event."""
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -41,23 +41,23 @@ class AgentLogger:
             "data": data
         }
         self.logs.append(entry)
-        
+
         if self.verbose:
             self._print_log(entry)
-    
+
     def _print_log(self, entry: dict):
         """Print log entry to console."""
         t = entry["timestamp"]
         event_type = entry["type"]
         data = entry["data"]
-        
+
         print(f"\n{'='*60}")
         print(f"[{t}] {event_type.upper()}")
         print('='*60)
-        
+
         if event_type == "user_input":
             print(f"Question: {data.get('question', '')}")
-        
+
         elif event_type == "llm_input":
             print(f"Messages count: {data.get('message_count', 0)}")
             print(f"Last message type: {data.get('last_message_type', '')}")
@@ -66,7 +66,7 @@ class AgentLogger:
                 if len(content) > 500:
                     content = content[:500] + "..."
                 print(f"Last message: {content}")
-        
+
         elif event_type == "llm_output":
             print(f"Response type: {data.get('response_type', '')}")
             if data.get('content'):
@@ -76,31 +76,31 @@ class AgentLogger:
                 print(f"Content: {content}")
             if data.get('tool_calls'):
                 print(f"Tool calls: {json.dumps(data['tool_calls'], indent=2, ensure_ascii=False)}")
-        
+
         elif event_type == "tool_call":
             print(f"Tool: {data.get('tool_name', '')}")
             print(f"Arguments: {json.dumps(data.get('arguments', {}), indent=2, ensure_ascii=False)}")
-        
+
         elif event_type == "tool_result":
             print(f"Tool: {data.get('tool_name', '')}")
             result = data.get('result', '')
             if isinstance(result, str) and len(result) > 500:
                 result = result[:500] + "..."
             print(f"Result: {result}")
-        
+
         elif event_type == "decision":
             print(f"Next step: {data.get('next_step', '')}")
             print(f"Reason: {data.get('reason', '')}")
-        
+
         elif event_type == "final_answer":
             print(f"Answer: {data.get('answer', '')}")
-        
+
         print()
-    
+
     def get_logs(self) -> list[dict]:
         """Get all logs."""
         return self.logs.copy()
-    
+
     def clear(self):
         """Clear logs."""
         self.logs = []
@@ -111,17 +111,17 @@ class AgentLogger:
 class AgentState(TypedDict):
     """State of the agent during execution."""
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    
+
 
 # === Agent Graph ===
 
 class CityGridAgent:
     """
     CityGrid AI Agent using LangGraph.
-    
+
     Implements ReAct pattern: Reasoning + Acting in a loop.
     """
-    
+
     def __init__(
         self,
         model_name: str = "llama3.1:8b",
@@ -133,16 +133,16 @@ class CityGridAgent:
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.logger = AgentLogger(verbose=verbose)
-        
+
         # Initialize LLM
         self.llm = ChatOllama(
             model=model_name,
             base_url=ollama_base_url,
             temperature=temperature,
         )
-        
+
         # Bind tools to LLM
-        self.tools = SQL_TOOLS
+        self.tools = ALL_TOOLS
         self.llm_with_tools = self.llm.bind_tools(self.tools)
         
         # Build graph
