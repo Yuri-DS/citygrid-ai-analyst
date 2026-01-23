@@ -144,20 +144,20 @@ class CityGridAgent:
         # Bind tools to LLM
         self.tools = ALL_TOOLS
         self.llm_with_tools = self.llm.bind_tools(self.tools)
-        
+
         # Build graph
         self.graph = self._build_graph()
-    
+
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph agent graph."""
-        
+
         # Create graph
         graph = StateGraph(AgentState)
-        
+
         # Add nodes
         graph.add_node("agent", self._agent_node)
         graph.add_node("tools", self._tools_node)
-        
+
         # Add edges
         graph.set_entry_point("agent")
         graph.add_conditional_edges(
@@ -169,13 +169,13 @@ class CityGridAgent:
             }
         )
         graph.add_edge("tools", "agent")
-        
+
         return graph.compile()
-    
+
     def _agent_node(self, state: AgentState) -> dict:
         """Agent reasoning node - decides what to do next."""
         messages = state["messages"]
-        
+
         # Log input to LLM
         last_msg = messages[-1] if messages else None
         self.logger.log("llm_input", {
@@ -183,14 +183,32 @@ class CityGridAgent:
             "last_message_type": type(last_msg).__name__ if last_msg else None,
             "last_message_content": last_msg.content if last_msg else None,
         })
-        
+
         # Add system prompt if first message
         if len(messages) == 1 and isinstance(messages[0], HumanMessage):
             system_message = ("system", SYSTEM_PROMPT)
             response = self.llm_with_tools.invoke([system_message] + list(messages))
         else:
             response = self.llm_with_tools.invoke(messages)
-        
+
+        # FALLBACK: If no tool_calls but JSON in content, try to parse it
+        if not (hasattr(response, "tool_calls") and response.tool_calls):
+            extracted_call = self._extract_tool_call_from_text(response.content)
+            if extracted_call:
+                self.logger.log("fallback_parse", {
+                    "message": "Extracted tool call from text",
+                    "tool": extracted_call["name"]
+                })
+                # Create new AIMessage with proper tool_calls
+                response = AIMessage(
+                    content="",
+                    tool_calls=[{
+                        "name": extracted_call["name"],
+                        "args": extracted_call["args"],
+                        "id": f"fallback_{extracted_call['name']}"
+                    }]
+                )
+
         # Log LLM output
         tool_calls = None
         if hasattr(response, "tool_calls") and response.tool_calls:
@@ -198,50 +216,97 @@ class CityGridAgent:
                 {"name": tc["name"], "args": tc["args"]}
                 for tc in response.tool_calls
             ]
-        
+
         self.logger.log("llm_output", {
             "response_type": type(response).__name__,
             "content": response.content,
             "tool_calls": tool_calls,
         })
-        
+
         return {"messages": [response]}
-    
+
+    def _extract_tool_call_from_text(self, content: str) -> dict | None:
+        """
+        Try to extract tool call from text if LLM wrote JSON instead of calling tool.
+
+        Handles formats like:
+        - {"name": "execute_sql", "parameters": {"query": "..."}}
+        - {"name": "search_documentation", "parameters": {"query": "..."}}
+        """
+        if not content:
+            return None
+
+        import re
+
+        # Look for JSON patterns in text
+        # Pattern 1: {"name": "tool_name", "parameters": {...}}
+        pattern = r'\{\s*"name"\s*:\s*"(\w+)"\s*,\s*"parameters"\s*:\s*(\{[^}]+\})\s*\}'
+
+        matches = re.findall(pattern, content, re.DOTALL)
+
+        if matches:
+            # Take the first match (or last for multi-step plans)
+            tool_name, params_str = matches[-1]  # Last one is usually the action to take
+
+            try:
+                params = json.loads(params_str)
+
+                # Only extract known tools
+                known_tools = {"execute_sql", "search_documentation", "get_schema", "get_table_sample"}
+                if tool_name in known_tools:
+                    return {
+                        "name": tool_name,
+                        "args": params
+                    }
+            except json.JSONDecodeError:
+                pass
+
+        # Pattern 2: Try to find execute_sql with query directly
+        sql_pattern = r'"query"\s*:\s*"([^"]+)"'
+        sql_match = re.search(sql_pattern, content)
+        if sql_match and "execute_sql" in content.lower():
+            return {
+                "name": "execute_sql",
+                "args": {"query": sql_match.group(1)}
+            }
+
+        return None
+
     def _tools_node(self, state: AgentState) -> dict:
         """Execute tools and log results."""
         messages = state["messages"]
         last_message = messages[-1]
-        
+
         results = []
-        
+
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
-                
+
                 # Log tool call
                 self.logger.log("tool_call", {
                     "tool_name": tool_name,
                     "arguments": tool_args,
                 })
-                
+
                 # Find and execute tool
                 tool_fn = None
                 for tool in self.tools:
                     if tool.name == tool_name:
                         tool_fn = tool
                         break
-                
+
                 if tool_fn:
                     result = tool_fn.invoke(tool_args)
-                    
+
                     # Log result
                     result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
                     self.logger.log("tool_result", {
                         "tool_name": tool_name,
                         "result": result_str[:1000],  # Truncate for logging
                     })
-                    
+
                     results.append(ToolMessage(
                         content=json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result),
                         name=tool_name,
@@ -258,14 +323,14 @@ class CityGridAgent:
                         name=tool_name,
                         tool_call_id=tool_call["id"],
                     ))
-        
+
         return {"messages": results}
-    
+
     def _should_continue(self, state: AgentState) -> str:
         """Decide whether to continue with tools or end."""
         messages = state["messages"]
         last_message = messages[-1]
-        
+
         # If LLM wants to use tools, continue
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             self.logger.log("decision", {
@@ -273,79 +338,79 @@ class CityGridAgent:
                 "reason": f"LLM requested {len(last_message.tool_calls)} tool(s)",
             })
             return "tools"
-        
+
         # Otherwise, end
         self.logger.log("decision", {
             "next_step": "end",
             "reason": "LLM provided final answer",
         })
         return "end"
-    
+
     def invoke(self, question: str) -> dict:
         """
         Run the agent on a question.
-        
+
         Args:
             question: User's question in natural language
-            
+
         Returns:
             Dict with 'answer', 'messages', 'steps', and 'logs'
         """
         # Clear previous logs
         self.logger.clear()
-        
+
         # Log user input
         self.logger.log("user_input", {"question": question})
-        
+
         # Initial state
         initial_state = {
             "messages": [HumanMessage(content=question)]
         }
-        
+
         # Run graph
         result = self.graph.invoke(initial_state)
-        
+
         # Extract answer and steps
         messages = result["messages"]
         steps = self._extract_steps(messages)
-        
+
         # Get final answer
         final_answer = messages[-1].content if messages else "No answer generated"
-        
+
         # Log final answer
         self.logger.log("final_answer", {"answer": final_answer[:500]})
-        
+
         return {
             "answer": final_answer,
             "messages": messages,
             "steps": steps,
             "logs": self.logger.get_logs(),
         }
-    
+
     def stream(self, question: str):
         """
         Stream the agent execution step by step.
-        
+
         Args:
             question: User's question in natural language
-            
+
         Yields:
             Dict with current state and step info
         """
         self.logger.clear()
         self.logger.log("user_input", {"question": question})
-        
+
         initial_state = {
             "messages": [HumanMessage(content=question)]
         }
-        
+
         for event in self.graph.stream(initial_state):
             yield event
-    
+
     def _extract_steps(self, messages: list[BaseMessage]) -> list[dict]:
         """Extract reasoning steps from message history."""
         steps = []
-        
+
         for i, msg in enumerate(messages):
             if isinstance(msg, HumanMessage):
                 steps.append({
@@ -369,7 +434,7 @@ class CityGridAgent:
                     "tool": msg.name,
                     "content": msg.content[:500] + "..." if len(msg.content) > 500 else msg.content
                 })
-        
+
         return steps
 
 
