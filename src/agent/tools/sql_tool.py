@@ -21,45 +21,46 @@ from database import get_connection, validate_sql
 SCHEMA_DESCRIPTION = """
 CityGrid Database Schema:
 
-1. districts - Administrative districts (10 records)
-   Columns: id, name, district_type, population, area_km2, density, avg_income_level, center_lat, center_lon, geometry
+1. districts - Administrative districts (5-20 records)
+   Columns: district_id, name, type, population, area_km2, density, income_level, industrial_coeff, center_lat, center_lon, geometry
 
-2. road_network_nodes - Road network nodes/intersections (250 records)
-   Columns: id, node_type, lat, lon, district_id
+2. road_network_nodes - Road network nodes/intersections (100-600 records)
+   Columns: node_id, lat, lon, type, is_connected_to_district_center
 
-3. city_objects - City infrastructure objects (2000 records)
-   Columns: id, object_type, name, district_id, lat, lon, status, 
-            road_type, max_speed, lanes_count, condition (for road_segment type)
+3. city_objects - City infrastructure objects (500-6000 records)
+   Columns: object_id, district_id, object_type, name, lat, lon, install_date, status,
+            capacity (for stop/parking), length_m, from_node_id, to_node_id, road_type, 
+            max_speed_kmh, lanes_count, direction, condition, start_lat, start_lon, end_lat, end_lon (for road_segment)
    Object types: building, road_segment, streetlight, stop, parking, substation, park
+   Road types: highway, arterial, local, alley
 
-4. sensors - IoT sensors (3000 records)
-   Columns: id, sensor_type, object_id, install_date, is_active
+4. sensors - IoT sensors (750-9000 records)
+   Columns: sensor_id, object_id, sensor_type, unit, is_active, last_calibration, accuracy
    Sensor types: noise_db, pm25, traffic_intensity, temp_c
 
-5. smart_meters - Smart meters for utilities (1200 records)
-   Columns: id, meter_type, object_id, install_date, is_active
-   Meter types: electricity_kwh, water_m3, heating_gcal
+5. smart_meters - Smart meters for utilities (300-3600 records)
+   Columns: meter_id, object_id, utility_type, unit, is_active
+   Utility types: electricity_kwh, water_m3, heating_gcal
 
 6. sensor_readings - Sensor readings time series (LARGE TABLE - requires time filter!)
-   Columns: id, sensor_id, ts, value, quality_flag, anomaly_score
+   Columns: reading_id, sensor_id, ts, value, quality_flag, anomaly_score
    Quality flags: ok, missing, suspect
 
 7. meter_readings - Meter readings time series (LARGE TABLE - requires time filter!)
-   Columns: id, meter_id, ts, value, is_peak
+   Columns: reading_id, meter_id, ts, value, is_peak
 
-8. municipal_events - City events (300 records)
-   Columns: id, event_type, name, district_id, start_ts, end_ts, 
-            expected_attendance, impact_radius_km, noise_increase_db, traffic_increase_percent
+8. municipal_events - City events (75-1200 records)
+   Columns: event_id, district_id, name, event_type, start_ts, end_ts, expected_attendance, lat, lon, impact_radius_km, noise_increase_db, traffic_increase_percent
    Event types: concert, construction, accident, protest, festival, sports_event
 
-9. citizen_requests - Citizen complaints/requests (40000 records)
-   Columns: id, category, district_id, created_ts, status, resolution_hours, description, lat, lon
+9. citizen_requests - Citizen complaints/requests (10k-160k records)
+   Columns: request_id, district_id, object_id, category, created_ts, status, resolved_ts, resolution_hours, priority, description
    Categories: noise_complaint, pothole, broken_streetlight, water_leak, heating_issue, parking_issue, air_quality
    Statuses: new, in_progress, resolved, rejected
+   Priorities: low, medium, high
 
-10. public_transport_trips - Public transport trips (200000 records)
-    Columns: id, route_no, vehicle_id, stop_object_id, scheduled_ts, actual_ts, 
-             delay_minutes, passenger_estimate, weather_condition
+10. public_transport_trips - Public transport trips (50k-800k records)
+    Columns: trip_id, route_no, vehicle_id, stop_object_id, scheduled_ts, actual_ts, delay_minutes, passenger_estimate, weather_condition
 """
 
 
