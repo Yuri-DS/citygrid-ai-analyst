@@ -36,7 +36,7 @@ def init_database():
 @st.cache_resource
 def init_agent():
     """Initialize the AI agent."""
-    return create_agent(model_name="llama3.1:8b", verbose=True)
+    return create_agent(model_name="qwen2.5:7b", verbose=True)
 
 
 # === Session State ===
