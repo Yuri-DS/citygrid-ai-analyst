@@ -16,6 +16,13 @@
 - **Компонент:** UI / Streamlit  
 - **Описание:** Иногда ответ не выводится на сайт, при этом в логах видно, что ответ есть.
 - **Статус:** OPEN
+---
+
+### BUG-003 — 
+- **Дата:** 23.01.2026
+- **Компонент:** UI / Streamlit  
+- **Описание:** sidebar write "✅ Agent ready" even if i dont have model. If i write while not have model an error occurs "Error: model 'mistral' not found (status code: 404)"
+- **Статус:** OPEN
 
 ---
 
