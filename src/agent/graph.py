@@ -252,7 +252,11 @@ class CityGridAgent:
                 params = json.loads(params_str)
 
                 # Only extract known tools
-                known_tools = {"execute_sql", "search_documentation", "get_schema", "get_table_sample"}
+                known_tools = {
+                    "execute_sql", "search_documentation", "get_schema", "get_table_sample",
+                    "create_chart", "suggest_chart_type",
+                    "create_district_map", "create_points_map", "create_road_map"
+                }
                 if tool_name in known_tools:
                     return {
                         "name": tool_name,

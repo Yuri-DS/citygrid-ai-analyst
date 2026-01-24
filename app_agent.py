@@ -1,14 +1,16 @@
 """
 CityGrid AI Analyst - Main Application
-Phase 2: RAG + Model Selection + Fixes
+Phase 3: Visualization (Charts + Maps)
 """
 
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from pathlib import Path
 import sys
 import json
 import requests
+import plotly.graph_objects as go
 
 # Add src to path
 src_path = Path(__file__).parent / "src"
@@ -115,6 +117,10 @@ def display_step(step: dict, container):
         container.warning(f"🔧 **Calling tool:** `{tool_name}`")
         if tool_name == "execute_sql" and "query" in args:
             container.code(args["query"], language="sql")
+        elif tool_name in ["create_chart", "suggest_chart_type"]:
+            container.caption(f"Chart type: {args.get('chart_type', 'auto')}")
+        elif tool_name in ["create_district_map", "create_points_map", "create_road_map"]:
+            container.caption(f"Creating map: {args.get('title', 'Map')}")
         else:
             container.json(args)
 
@@ -124,8 +130,18 @@ def display_step(step: dict, container):
         container.success(f"✅ **Result from:** `{tool_name}`")
         try:
             data = json.loads(result) if isinstance(result, str) else result
-            if isinstance(data, dict) and "data" in data and data["data"]:
-                container.dataframe(pd.DataFrame(data["data"]), use_container_width=True)
+            if isinstance(data, dict):
+                # Handle chart result
+                if "chart_json" in data and data.get("success"):
+                    container.caption(f"Chart created: {data.get('chart_type', 'unknown')}")
+                # Handle map result
+                elif "map_html" in data and data.get("success"):
+                    container.caption(f"Map created with {data.get('points_count', data.get('districts_count', data.get('roads_count', '?')))} items")
+                # Handle SQL result
+                elif "data" in data and data["data"]:
+                    container.dataframe(pd.DataFrame(data["data"]), use_container_width=True)
+                else:
+                    container.code(str(result)[:500])
             else:
                 container.code(str(result)[:500])
         except:
@@ -140,6 +156,7 @@ def display_step(step: dict, container):
 def run_agent_with_streaming(agent, prompt: str, container):
     """Run agent and display steps in real-time."""
     collected_steps = []
+    visualizations = []  # Store charts and maps
 
     with container:
         with st.spinner("Thinking..."):
@@ -156,7 +173,7 @@ def run_agent_with_streaming(agent, prompt: str, container):
             )
             logs = result.get("logs") or []
         else:
-            final_answer = str(result)
+            final_answer = str(result) if result else "No answer generated"
             logs = []
 
         # Display reasoning steps in expander
@@ -186,18 +203,47 @@ def run_agent_with_streaming(agent, prompt: str, container):
                             display_step(step, st)
 
                 elif log_type == "tool_result":
+                    tool_name = data.get("tool_name")
+                    tool_result = data.get("result")
+
                     step = {
                         "type": "tool_result",
-                        "tool_name": data.get("tool_name"),
-                        "result": data.get("result"),
+                        "tool_name": tool_name,
+                        "result": tool_result,
                     }
                     collected_steps.append(step)
                     display_step(step, st)
 
+                    # Extract visualizations
+                    try:
+                        result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+                        if isinstance(result_data, dict):
+                            if result_data.get("success"):
+                                if "chart_json" in result_data:
+                                    visualizations.append({"type": "chart", "data": result_data["chart_json"], "title": result_data.get("title", "Chart")})
+                                elif "map_html" in result_data:
+                                    visualizations.append({"type": "map", "data": result_data["map_html"], "title": result_data.get("title", "Map")})
+                    except:
+                        pass
+
+        # Display visualizations
+        for viz in visualizations:
+            if viz["type"] == "chart":
+                try:
+                    fig = go.Figure(json.loads(viz["data"]))
+                    st.plotly_chart(fig, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Failed to render chart: {e}")
+            elif viz["type"] == "map":
+                try:
+                    components.html(viz["data"], height=500, scrolling=True)
+                except Exception as e:
+                    st.error(f"Failed to render map: {e}")
+
         # Display final answer
         st.markdown(final_answer)
 
-    return {"answer": final_answer, "steps": collected_steps}
+    return {"answer": final_answer, "steps": collected_steps, "visualizations": visualizations}
 
 
 # === UI ===
@@ -295,7 +341,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("CityGrid AI Analyst v0.7")
+    st.caption("CityGrid AI Analyst v0.8")
 
 # Main chat area
 st.header("💬 Chat")
@@ -350,10 +396,11 @@ if not st.session_state.messages:
 
     examples = [
         "How many districts are in the city?",
-        "Show me the top 5 districts by population",
-        "What types of sensors are available?",
-        "How many citizen requests are there by category?",
+        "Show me districts by population as a bar chart",
+        "Show the distribution of sensor types as a pie chart",
+        "Show all districts on a map",
         "What is the average population density across districts?",
+        "Show road conditions on a map",
     ]
 
     cols = st.columns(2)
