@@ -241,7 +241,11 @@ def run_agent_with_streaming(agent, prompt: str, container):
                     st.error(f"Failed to render map: {e}")
 
         # Display final answer
-        st.markdown(final_answer)
+        try:
+            # Ваш основной код для обработки и отображения ответа
+            st.markdown(final_answer)
+        except Exception as e:
+            st.error(f"Error while displaying the result: {str(e)}")
 
     return {"answer": final_answer, "steps": collected_steps, "visualizations": visualizations}
 
