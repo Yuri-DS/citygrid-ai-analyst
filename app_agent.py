@@ -153,6 +153,71 @@ def display_step(step: dict, container):
             container.markdown(content)
 
 
+def extract_visualizations_from_messages(messages) -> list[dict]:
+    """
+    Extract visualizations from full message objects.
+
+    This uses the complete ToolMessage content, not truncated logs.
+    """
+    visualizations = []
+
+    for msg in messages:
+        # Check if it's a ToolMessage (has 'name' attribute and content)
+        if hasattr(msg, 'name') and hasattr(msg, 'content'):
+            try:
+                # Parse the full content
+                result_data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+
+                if isinstance(result_data, dict) and result_data.get("success"):
+                    if "chart_json" in result_data:
+                        visualizations.append({
+                            "type": "chart",
+                            "data": result_data["chart_json"],
+                            "title": result_data.get("title", "Chart")
+                        })
+                    elif "map_html" in result_data:
+                        visualizations.append({
+                            "type": "map",
+                            "data": result_data["map_html"],
+                            "title": result_data.get("title", "Map")
+                        })
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    return visualizations
+
+
+def extract_steps_from_logs(logs) -> list[dict]:
+    """Extract reasoning steps from logs for display."""
+    collected_steps = []
+
+    for log in logs:
+        if not isinstance(log, dict):
+            continue
+
+        log_type = log.get("type")
+        data = log.get("data", {})
+
+        if log_type == "llm_output":
+            tool_calls = data.get("tool_calls")
+            if tool_calls:
+                for tc in tool_calls:
+                    collected_steps.append({
+                        "type": "tool_call",
+                        "tool_name": tc.get("name"),
+                        "arguments": tc.get("args", {}),
+                    })
+
+        elif log_type == "tool_result":
+            collected_steps.append({
+                "type": "tool_result",
+                "tool_name": data.get("tool_name"),
+                "result": data.get("result", ""),
+            })
+
+    return collected_steps
+
+
 # === UI ===
 
 st.title("🏙️ CityGrid AI Analyst")
@@ -248,7 +313,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("CityGrid AI Analyst v0.9")
+    st.caption("CityGrid AI Analyst v0.10")
 
 # Main chat area
 st.header("💬 Chat")
@@ -303,57 +368,21 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
                     or "No answer generated"
                 )
                 logs = result.get("logs") or []
+                messages = result.get("messages") or []
             else:
                 final_answer = str(result)
                 logs = []
+                messages = []
 
-            # Process logs to extract steps and visualizations
-            collected_steps = []
-            visualizations = []
+            # Extract steps from logs (for display in expander)
+            collected_steps = extract_steps_from_logs(logs)
 
-            for log in logs:
-                if not isinstance(log, dict):
-                    continue
+            # Extract visualizations from FULL messages (not truncated logs!)
+            visualizations = extract_visualizations_from_messages(messages)
 
-                log_type = log.get("type")
-                data = log.get("data", {})
-
-                if log_type == "llm_output":
-                    tool_calls = data.get("tool_calls")
-                    if tool_calls:
-                        for tc in tool_calls:
-                            collected_steps.append({
-                                "type": "tool_call",
-                                "tool_name": tc.get("name"),
-                                "arguments": tc.get("args", {}),
-                            })
-
-                elif log_type == "tool_result":
-                    tool_result = data.get("result")
-                    collected_steps.append({
-                        "type": "tool_result",
-                        "tool_name": data.get("tool_name"),
-                        "result": tool_result,
-                    })
-
-                    # Extract visualizations
-                    try:
-                        result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
-                        if isinstance(result_data, dict) and result_data.get("success"):
-                            if "chart_json" in result_data:
-                                visualizations.append({
-                                    "type": "chart",
-                                    "data": result_data["chart_json"],
-                                    "title": result_data.get("title", "Chart")
-                                })
-                            elif "map_html" in result_data:
-                                visualizations.append({
-                                    "type": "map",
-                                    "data": result_data["map_html"],
-                                    "title": result_data.get("title", "Map")
-                                })
-                    except:
-                        pass
+            # Debug output (remove in production)
+            if visualizations:
+                print(f"DEBUG: Found {len(visualizations)} visualization(s)")
 
             # Save to session state
             st.session_state.messages.append({
@@ -364,16 +393,21 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
             })
 
         except Exception as e:
+            import traceback
+            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)  # For debugging
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": f"Error: {str(e)}",
-                "steps": []
+                "steps": [],
+                "visualizations": []
             })
     else:
         st.session_state.messages.append({
             "role": "assistant",
             "content": "Agent not initialized. Check Ollama connection.",
-            "steps": []
+            "steps": [],
+            "visualizations": []
         })
 
     # Rerun to display the new messages

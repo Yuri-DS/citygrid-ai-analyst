@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from database import get_connection, validate_sql
+from .plot_tool import set_last_sql_data
 
 
 # === Schema Description for LLM ===
@@ -66,24 +67,7 @@ CityGrid Database Schema:
 
 @tool
 def execute_sql(query: str) -> dict[str, Any]:
-    """
-    Execute a SQL query against the CityGrid database.
-
-    Use this tool to retrieve data from the database. Only SELECT queries are allowed.
-    For large tables (sensor_readings, meter_readings), you MUST include a time filter.
-
-    Args:
-        query: SQL SELECT query to execute
-
-    Returns:
-        Dictionary with 'success', 'data' (list of records), 'row_count', and optionally 'error'
-
-    Example queries:
-        - "SELECT * FROM districts LIMIT 10"
-        - "SELECT sensor_type, COUNT(*) FROM sensors GROUP BY sensor_type"
-        - "SELECT * FROM sensor_readings WHERE ts >= '2024-01-01' AND ts < '2024-01-02' LIMIT 100"
-    """
-    # Validate and add limit
+    """Execute a SQL query against the CityGrid database."""
     safe_query, validation = validate_sql(query, add_limit=True)
 
     if not validation.is_valid:
@@ -94,9 +78,8 @@ def execute_sql(query: str) -> dict[str, Any]:
             "row_count": 0
         }
 
-    # Execute query
     conn = get_connection()
-    df, error = conn.execute(safe_query, validate=False)  # Already validated
+    df, error = conn.execute(safe_query, validate=False)
 
     if error:
         return {
@@ -106,8 +89,9 @@ def execute_sql(query: str) -> dict[str, Any]:
             "row_count": 0
         }
 
-    # Convert to records
     records = df.to_dict("records")
+
+    set_last_sql_data(records)
 
     return {
         "success": True,
