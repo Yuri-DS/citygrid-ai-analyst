@@ -365,6 +365,11 @@ with st.sidebar:
 # Main chat area
 st.header("💬 Chat")
 
+# DEBUG: Show session state info
+print(f"DEBUG SESSION: messages count = {len(st.session_state.messages)}")
+for i, m in enumerate(st.session_state.messages):
+    print(f"DEBUG SESSION msg[{i}]: role={m.get('role')}, content_len={len(m.get('content', ''))}, viz_count={len(m.get('visualizations', []))}")
+
 # Display chat history
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -470,6 +475,7 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
         })
 
     # Rerun to display the new messages
+    print(f"DEBUG BEFORE RERUN: messages count = {len(st.session_state.messages)}")
     st.rerun()
 
 # # Example questions
