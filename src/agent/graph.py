@@ -109,7 +109,7 @@ class CityGridAgent:
         model_name: str = "llama3.1:8b",
         ollama_base_url: str = "http://localhost:11434",
         temperature: float = 0.1,
-        max_iterations: int = 10,
+        max_iterations: int = 15,
         verbose: bool = True,
     ):
         self.model_name = model_name
