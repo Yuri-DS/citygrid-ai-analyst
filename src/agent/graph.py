@@ -109,7 +109,7 @@ class CityGridAgent:
         model_name: str = "llama3.1:8b",
         ollama_base_url: str = "http://localhost:11434",
         temperature: float = 0.1,
-        max_iterations: int = 15,
+        max_iterations: int = 10,
         verbose: bool = True,
     ):
         self.model_name = model_name
@@ -117,11 +117,12 @@ class CityGridAgent:
         self.logger = AgentLogger(verbose=verbose)
         self.original_question = ""  # Store for auto-visualization logic
 
-        # Initialize LLM
+        # Initialize LLM with timeout to prevent hanging
         self.llm = ChatOllama(
             model=model_name,
             base_url=ollama_base_url,
             temperature=temperature,
+            timeout=180,  # 3 minutes timeout - prevents infinite hang
         )
 
         # Bind tools to LLM
@@ -180,22 +181,76 @@ class CityGridAgent:
             "tool_calls": tool_calls,
         })
 
+        # Log thinking (LLM's reasoning content)
+        if response.content and not tool_calls:
+            self.logger.log("thinking", {
+                "content": response.content
+            })
+
         return {"messages": [response]}
 
     def _tools_node(self, state: AgentState) -> dict:
-        """Execute tool calls."""
+        """Execute tool calls with auto-fetch protection for visualization tools."""
         messages = state["messages"]
         last_message = messages[-1]
         results = []
+
+        # Visualization tools that need data
+        VIZ_TOOLS = {"create_chart", "create_district_map", "create_points_map", "create_road_map"}
+
+        # SQL queries for auto-fetch when viz tool called without data
+        AUTO_FETCH_QUERIES = {
+            "create_district_map": "SELECT name, center_lat, center_lon, population, type FROM districts",
+            "create_points_map": "SELECT s.sensor_id, s.sensor_type, co.lat, co.lon FROM sensors s JOIN city_objects co ON s.object_id = co.object_id LIMIT 500",
+            "create_road_map": "SELECT name, road_type, condition, start_lat, start_lon, end_lat, end_lon FROM city_objects WHERE object_type='road_segment' LIMIT 300",
+        }
 
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
 
+                # Check if visualization tool called with empty data
+                if tool_name in VIZ_TOOLS:
+                    data_arg = tool_args.get("data", "")
+                    is_empty = (data_arg == "" or data_arg == [] or data_arg is None)
+
+                    if is_empty:
+                        self.logger.log("auto_fetch", {
+                            "reason": f"{tool_name} called with empty data, fetching automatically",
+                        })
+
+                        # For create_chart, we need to get data from previous SQL result or skip
+                        if tool_name == "create_chart":
+                            # Check if there's SQL data in previous messages
+                            sql_data = self._get_last_sql_data(messages)
+                            if sql_data:
+                                tool_args["data"] = sql_data
+                            else:
+                                # Can't auto-fetch for generic chart, return error
+                                results.append(ToolMessage(
+                                    content=json.dumps({"success": False, "error": "No data provided. Call execute_sql first to get data."}),
+                                    name=tool_name,
+                                    tool_call_id=tool_call.get("id", f"call_{tool_name}"),
+                                ))
+                                continue
+                        else:
+                            # Auto-fetch data for map tools
+                            query = AUTO_FETCH_QUERIES.get(tool_name)
+                            if query:
+                                sql_tool = self.tools_by_name.get("execute_sql")
+                                if sql_tool:
+                                    sql_result = sql_tool.invoke({"query": query})
+                                    if sql_result.get("success") and sql_result.get("data"):
+                                        tool_args["data"] = sql_result["data"]
+                                        self.logger.log("auto_fetch_success", {
+                                            "tool": tool_name,
+                                            "rows": len(sql_result["data"]),
+                                        })
+
                 self.logger.log("tool_call", {
                     "tool_name": tool_name,
-                    "arguments": tool_args,
+                    "arguments": {k: v if k != "data" else f"[{len(v) if isinstance(v, list) else 'str'}]" for k, v in tool_args.items()},
                 })
 
                 tool_fn = self.tools_by_name.get(tool_name)
@@ -223,6 +278,18 @@ class CityGridAgent:
                     ))
 
         return {"messages": results}
+
+    def _get_last_sql_data(self, messages) -> list | None:
+        """Get data from the last successful SQL query in messages."""
+        for msg in reversed(messages):
+            if hasattr(msg, "name") and msg.name == "execute_sql":
+                try:
+                    result = json.loads(msg.content)
+                    if result.get("success") and result.get("data"):
+                        return result["data"]
+                except:
+                    pass
+        return None
 
     def _should_continue(self, state: AgentState) -> str:
         """Decide whether to continue with tools or end."""

@@ -11,6 +11,35 @@ import sys
 import json
 import requests
 import plotly.graph_objects as go
+import concurrent.futures
+import time
+
+
+def safe_invoke(agent, prompt, timeout=180, retries=1):
+    """
+    Safely invoke agent with timeout and retry.
+
+    Prevents UI from hanging if LLM gets stuck.
+    """
+    for attempt in range(retries + 1):
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(agent.invoke, prompt)
+                return future.result(timeout=timeout)
+
+        except concurrent.futures.TimeoutError:
+            if attempt < retries:
+                print(f"[WARN] LLM timeout (attempt {attempt + 1}/{retries + 1}), retrying...")
+                time.sleep(2)
+                continue
+            raise TimeoutError(f"LLM did not respond within {timeout} seconds after {retries + 1} attempts")
+
+        except Exception as e:
+            if attempt < retries:
+                print(f"[WARN] Error: {e}, retrying...")
+                time.sleep(2)
+                continue
+            raise
 
 # Add src to path
 src_path = Path(__file__).parent / "src"
@@ -372,9 +401,12 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
         try:
             agent = get_agent(st.session_state.selected_model)
 
-            # Show spinner while processing
-            with st.spinner("🤔 Thinking..."):
-                result = agent.invoke(prompt)
+            # Show spinner while processing with timeout protection
+            with st.spinner("🤔 Thinking... (max 3 min)"):
+                start_time = time.time()
+                result = safe_invoke(agent, prompt, timeout=180, retries=1)
+                elapsed = time.time() - start_time
+                print(f"DEBUG: Agent completed in {elapsed:.1f}s")
 
             # Extract answer
             if isinstance(result, dict):
@@ -408,6 +440,15 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
                 "content": final_answer,
                 "steps": collected_steps,
                 "visualizations": visualizations
+            })
+
+        except TimeoutError as e:
+            print(f"TIMEOUT ERROR: {e}")
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": f"⏰ **Timeout:** The model took too long to respond. Please try again or use a simpler question.",
+                "steps": [],
+                "visualizations": []
             })
 
         except Exception as e:
