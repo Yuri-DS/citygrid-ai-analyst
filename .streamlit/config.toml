@@ -4,7 +4,8 @@ base = "dark"
 [server]
 # Increase WebSocket timeout for long LLM responses
 enableWebsocketCompression = false
-maxMessageSize = 200
+fileWatcherType = "none"
+maxMessageSize = 1000
 
 [browser]
 # Disable CORS issues
