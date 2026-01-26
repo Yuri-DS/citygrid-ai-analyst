@@ -1,2 +1,19 @@
 [theme]
 base = "dark"
+
+[server]
+# Increase WebSocket timeout for long LLM responses
+enableWebsocketCompression = false
+maxMessageSize = 200
+
+[browser]
+# Disable CORS issues
+gatherUsageStats = false
+
+[runner]
+# Increase timeout for long running operations
+fastReruns = true
+
+[client]
+# Show error details
+showErrorDetails = true

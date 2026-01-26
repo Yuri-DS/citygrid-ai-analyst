@@ -378,11 +378,11 @@ class CityGridAgent:
         messages = result["messages"]
         steps = self._extract_steps(messages)
 
-        # Get final answer
-        final_answer = messages[-1].content if messages else "No answer generated"
+        # Get final answer with fallback logic
+        final_answer = self._extract_final_answer(messages, question)
 
         # Log final answer
-        self.logger.log("final_answer", {"answer": final_answer[:500]})
+        self.logger.log("final_answer", {"answer": final_answer[:500] if final_answer else ""})
 
         return {
             "answer": final_answer,
@@ -390,6 +390,45 @@ class CityGridAgent:
             "steps": steps,
             "logs": self.logger.get_logs(),
         }
+
+    def _extract_final_answer(self, messages: list[BaseMessage], question: str) -> str:
+        """Extract final answer with fallback for empty responses."""
+        # Try to get answer from last message
+        if messages and hasattr(messages[-1], 'content') and messages[-1].content:
+            return messages[-1].content
+
+        # Fallback: Look for last meaningful content
+        # Check if there's SQL result data that can be summarized
+        last_tool_result = None
+        for msg in reversed(messages):
+            if isinstance(msg, ToolMessage):
+                try:
+                    result = json.loads(msg.content)
+                    if result.get("success") and result.get("data"):
+                        last_tool_result = result
+                        break
+                except:
+                    pass
+
+        # If we have data but no answer, generate a summary
+        if last_tool_result:
+            data = last_tool_result["data"]
+            row_count = last_tool_result.get("row_count", len(data))
+
+            # Check if visualization was requested
+            q_lower = question.lower()
+            if any(word in q_lower for word in ["chart", "plot", "graph", "map", "show", "visualize", "display"]):
+                return f"I retrieved {row_count} records. However, I couldn't create the visualization. Here's the data summary: {json.dumps(data[:5], indent=2)}" + ("..." if row_count > 5 else "")
+            else:
+                # Simple data response
+                if row_count == 1 and len(data[0]) == 1:
+                    # Single value
+                    value = list(data[0].values())[0]
+                    return f"The result is: {value}"
+                else:
+                    return f"Query returned {row_count} records:\n{json.dumps(data[:10], indent=2)}" + ("..." if row_count > 10 else "")
+
+        return "No answer generated"
 
     def stream(self, question: str):
         """

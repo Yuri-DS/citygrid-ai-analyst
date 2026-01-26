@@ -153,103 +153,6 @@ def display_step(step: dict, container):
             container.markdown(content)
 
 
-def run_agent_with_streaming(agent, prompt: str, container):
-    """Run agent and display steps in real-time."""
-    collected_steps = []
-    visualizations = []  # Store charts and maps
-
-    with container:
-        with st.spinner("Thinking..."):
-            result = agent.invoke(prompt)
-
-        # Robust final answer extraction
-        if isinstance(result, dict):
-            final_answer = (
-                result.get("answer")
-                or result.get("output")
-                or result.get("final_answer")
-                or result.get("content")
-                or "No answer generated"
-            )
-            logs = result.get("logs") or []
-        else:
-            final_answer = str(result) if result else "No answer generated"
-            logs = []
-
-        # Display reasoning steps in expander
-        with st.expander("🔍 **Reasoning Steps**", expanded=False):
-            for log in logs:
-                # Handle case where log is not a dict
-                if not isinstance(log, dict):
-                    st.code(str(log))
-                    continue
-
-                log_type = log.get("type")
-                data = log.get("data", {})
-
-                if log_type == "fallback_parse":
-                    st.info(f"🔄 **Fallback:** {data.get('message', '')} - `{data.get('tool', '')}`")
-
-                elif log_type == "llm_output":
-                    tool_calls = data.get("tool_calls")
-                    if tool_calls:
-                        for tc in tool_calls:
-                            step = {
-                                "type": "tool_call",
-                                "tool_name": tc.get("name"),
-                                "arguments": tc.get("args", {}),
-                            }
-                            collected_steps.append(step)
-                            display_step(step, st)
-
-                elif log_type == "tool_result":
-                    tool_name = data.get("tool_name")
-                    tool_result = data.get("result")
-
-                    step = {
-                        "type": "tool_result",
-                        "tool_name": tool_name,
-                        "result": tool_result,
-                    }
-                    collected_steps.append(step)
-                    display_step(step, st)
-
-                    # Extract visualizations
-                    try:
-                        result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
-                        if isinstance(result_data, dict):
-                            if result_data.get("success"):
-                                if "chart_json" in result_data:
-                                    visualizations.append({"type": "chart", "data": result_data["chart_json"], "title": result_data.get("title", "Chart")})
-                                elif "map_html" in result_data:
-                                    visualizations.append({"type": "map", "data": result_data["map_html"], "title": result_data.get("title", "Map")})
-                    except:
-                        pass
-
-        # Display visualizations
-        for viz in visualizations:
-            if viz["type"] == "chart":
-                try:
-                    fig = go.Figure(json.loads(viz["data"]))
-                    st.plotly_chart(fig, use_container_width=True)
-                except Exception as e:
-                    st.error(f"Failed to render chart: {e}")
-            elif viz["type"] == "map":
-                try:
-                    components.html(viz["data"], height=500, scrolling=True)
-                except Exception as e:
-                    st.error(f"Failed to render map: {e}")
-
-        # Display final answer
-        try:
-            # Ваш основной код для обработки и отображения ответа
-            st.markdown(final_answer)
-        except Exception as e:
-            st.error(f"Error while displaying the result: {str(e)}")
-
-    return {"answer": final_answer, "steps": collected_steps, "visualizations": visualizations}
-
-
 # === UI ===
 
 st.title("🏙️ CityGrid AI Analyst")
@@ -345,7 +248,7 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("CityGrid AI Analyst v0.8")
+    st.caption("CityGrid AI Analyst v0.9")
 
 # Main chat area
 st.header("💬 Chat")
@@ -355,7 +258,22 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-        # Show reasoning steps if available (collapsed for history)
+        # Show visualizations if available
+        if "visualizations" in message and message["visualizations"]:
+            for viz in message["visualizations"]:
+                if viz["type"] == "chart":
+                    try:
+                        fig = go.Figure(json.loads(viz["data"]))
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Failed to render chart: {e}")
+                elif viz["type"] == "map":
+                    try:
+                        components.html(viz["data"], height=500, scrolling=True)
+                    except Exception as e:
+                        st.error(f"Failed to render map: {e}")
+
+        # Show reasoning steps if available (collapsed)
         if "steps" in message and message["steps"]:
             with st.expander("🔍 Reasoning Steps"):
                 for step in message["steps"]:
@@ -366,32 +284,100 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
     # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
     # Get agent response
-    with st.chat_message("assistant"):
-        if st.session_state.agent_initialized:
-            try:
-                agent = get_agent(st.session_state.selected_model)
-                chat_container = st.container()
-                result = run_agent_with_streaming(agent, prompt, chat_container)
+    if st.session_state.agent_initialized:
+        try:
+            agent = get_agent(st.session_state.selected_model)
 
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": result["answer"],
-                    "steps": result["steps"]
-                })
+            # Show spinner while processing
+            with st.spinner("🤔 Thinking..."):
+                result = agent.invoke(prompt)
 
-            except Exception as e:
-                error_msg = f"Error: {str(e)}"
-                st.error(error_msg)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": error_msg
-                })
-        else:
-            st.warning("Agent not initialized. Check Ollama connection.")
+            # Extract answer
+            if isinstance(result, dict):
+                final_answer = (
+                    result.get("answer")
+                    or result.get("output")
+                    or result.get("final_answer")
+                    or result.get("content")
+                    or "No answer generated"
+                )
+                logs = result.get("logs") or []
+            else:
+                final_answer = str(result)
+                logs = []
+
+            # Process logs to extract steps and visualizations
+            collected_steps = []
+            visualizations = []
+
+            for log in logs:
+                if not isinstance(log, dict):
+                    continue
+
+                log_type = log.get("type")
+                data = log.get("data", {})
+
+                if log_type == "llm_output":
+                    tool_calls = data.get("tool_calls")
+                    if tool_calls:
+                        for tc in tool_calls:
+                            collected_steps.append({
+                                "type": "tool_call",
+                                "tool_name": tc.get("name"),
+                                "arguments": tc.get("args", {}),
+                            })
+
+                elif log_type == "tool_result":
+                    tool_result = data.get("result")
+                    collected_steps.append({
+                        "type": "tool_result",
+                        "tool_name": data.get("tool_name"),
+                        "result": tool_result,
+                    })
+
+                    # Extract visualizations
+                    try:
+                        result_data = json.loads(tool_result) if isinstance(tool_result, str) else tool_result
+                        if isinstance(result_data, dict) and result_data.get("success"):
+                            if "chart_json" in result_data:
+                                visualizations.append({
+                                    "type": "chart",
+                                    "data": result_data["chart_json"],
+                                    "title": result_data.get("title", "Chart")
+                                })
+                            elif "map_html" in result_data:
+                                visualizations.append({
+                                    "type": "map",
+                                    "data": result_data["map_html"],
+                                    "title": result_data.get("title", "Map")
+                                })
+                    except:
+                        pass
+
+            # Save to session state
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": final_answer,
+                "steps": collected_steps,
+                "visualizations": visualizations
+            })
+
+        except Exception as e:
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": f"Error: {str(e)}",
+                "steps": []
+            })
+    else:
+        st.session_state.messages.append({
+            "role": "assistant",
+            "content": "Agent not initialized. Check Ollama connection.",
+            "steps": []
+        })
+
+    # Rerun to display the new messages
+    st.rerun()
 
 # Example questions
 if not st.session_state.messages:
