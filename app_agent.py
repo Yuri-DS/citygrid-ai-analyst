@@ -325,11 +325,12 @@ for message in st.session_state.messages:
 
         # Show visualizations if available
         if "visualizations" in message and message["visualizations"]:
-            for viz in message["visualizations"]:
+            for viz_idx, viz in enumerate(message["visualizations"]):
                 if viz["type"] == "chart":
                     try:
                         fig = go.Figure(json.loads(viz["data"]))
-                        st.plotly_chart(fig, use_container_width=True)
+                        # Use unique key to avoid duplicate ID error
+                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{id(message)}_{viz_idx}")
                     except Exception as e:
                         st.error(f"Failed to render chart: {e}")
                 elif viz["type"] == "map":
