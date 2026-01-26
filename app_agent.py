@@ -54,11 +54,12 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 
 # Available models for selection (ordered by recommendation)
 AVAILABLE_MODELS = {
+    "qwen2.5-7b-ctx32k": "Для очень сложных запросов",
+    "qwen2.5-7b-ctx16k": "Для запросов средней сложности",
     "qwen2.5:7b": "Qwen 2.5 7B - Best for tool calling ⭐",
-    "qwen2.5:14b": "Qwen 2.5 14B - Most capable, needs 10GB+ RAM",
+    "qwen2.5:3b": "Qwen 2.5 3B - Fast, fits in GPU ⚡",
     "llama3.1:8b": "Llama 3.1 8B - Good general model",
     "mistral": "Mistral 7B - Fast and capable",
-    "llama3.2:3b": "Llama 3.2 3B - Lightweight, less accurate",
 }
 
 # === Page Config ===
