@@ -161,29 +161,47 @@ def extract_visualizations_from_messages(messages) -> list[dict]:
     """
     visualizations = []
 
-    for msg in messages:
+    # Debug: print message info
+    print(f"DEBUG extract_viz: Processing {len(messages) if messages else 0} messages")
+
+    for i, msg in enumerate(messages):
+        msg_type = type(msg).__name__
+        has_name = hasattr(msg, 'name')
+        has_content = hasattr(msg, 'content')
+
+        print(f"DEBUG msg[{i}]: type={msg_type}, has_name={has_name}, has_content={has_content}")
+
         # Check if it's a ToolMessage (has 'name' attribute and content)
-        if hasattr(msg, 'name') and hasattr(msg, 'content'):
+        if has_name and has_content:
+            tool_name = getattr(msg, 'name', 'unknown')
+            content_preview = str(msg.content)[:100] if msg.content else 'empty'
+            print(f"DEBUG msg[{i}]: tool_name={tool_name}, content_preview={content_preview}")
+
             try:
                 # Parse the full content
                 result_data = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
 
                 if isinstance(result_data, dict) and result_data.get("success"):
                     if "chart_json" in result_data:
+                        print(f"DEBUG msg[{i}]: Found chart_json!")
                         visualizations.append({
                             "type": "chart",
                             "data": result_data["chart_json"],
                             "title": result_data.get("title", "Chart")
                         })
                     elif "map_html" in result_data:
+                        print(f"DEBUG msg[{i}]: Found map_html!")
                         visualizations.append({
                             "type": "map",
                             "data": result_data["map_html"],
                             "title": result_data.get("title", "Map")
                         })
-            except (json.JSONDecodeError, TypeError):
-                pass
+                    else:
+                        print(f"DEBUG msg[{i}]: success=True but no chart_json or map_html. Keys: {list(result_data.keys())}")
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"DEBUG msg[{i}]: JSON parse error: {e}")
 
+    print(f"DEBUG extract_viz: Found {len(visualizations)} visualizations")
     return visualizations
 
 
@@ -325,12 +343,11 @@ for message in st.session_state.messages:
 
         # Show visualizations if available
         if "visualizations" in message and message["visualizations"]:
-            for viz_idx, viz in enumerate(message["visualizations"]):
+            for viz in message["visualizations"]:
                 if viz["type"] == "chart":
                     try:
                         fig = go.Figure(json.loads(viz["data"]))
-                        # Use unique key to avoid duplicate ID error
-                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{id(message)}_{viz_idx}")
+                        st.plotly_chart(fig, use_container_width=True)
                     except Exception as e:
                         st.error(f"Failed to render chart: {e}")
                 elif viz["type"] == "map":
@@ -414,23 +431,23 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
     # Rerun to display the new messages
     st.rerun()
 
-# Example questions
-if not st.session_state.messages:
-    st.divider()
-    st.subheader("💡 Example Questions")
-
-    examples = [
-        "How many districts are in the city?",
-        "Show me districts by population as a bar chart",
-        "Show the distribution of sensor types as a pie chart",
-        "Show all districts on a map",
-        "What is the average population density across districts?",
-        "Show road conditions on a map",
-    ]
-
-    cols = st.columns(2)
-    for i, example in enumerate(examples):
-        with cols[i % 2]:
-            if st.button(example, key=f"example_{i}", use_container_width=True):
-                st.session_state.messages.append({"role": "user", "content": example})
-                st.rerun()
+# # Example questions
+# if not st.session_state.messages:
+#     st.divider()
+#     st.subheader("💡 Example Questions")
+#
+#     examples = [
+#         "How many districts are in the city?",
+#         "Show me districts by population as a bar chart",
+#         "Show the distribution of sensor types as a pie chart",
+#         "Show all districts on a map",
+#         "What is the average population density across districts?",
+#         "Show road conditions on a map",
+#     ]
+#
+#     cols = st.columns(2)
+#     for i, example in enumerate(examples):
+#         with cols[i % 2]:
+#             if st.button(example, key=f"example_{i}", use_container_width=True):
+#                 st.session_state.messages.append({"role": "user", "content": example})
+#                 st.rerun()
