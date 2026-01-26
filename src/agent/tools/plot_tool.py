@@ -5,40 +5,27 @@ Creates interactive Plotly visualizations based on data.
 """
 
 import json
-from typing import Any, Optional, Union
+from typing import Any, Union
 import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
 from langchain_core.tools import tool
-
-# Глобальное хранилище последнего SQL результата
-_last_sql_data: Optional[list[dict]] = None
-
-def set_last_sql_data(data: list[dict]) -> None:
-    """Store last SQL result for visualization tools."""
-    global _last_sql_data
-    _last_sql_data = data
-
-def get_last_sql_data() -> Optional[list[dict]]:
-    """Get last SQL result."""
-    return _last_sql_data
 
 
 @tool
 def create_chart(
-        chart_type: str,
-        x_column: str,
-        y_column: str = None,
-        title: str = None,
-        color_column: str = None
+    data: Union[str, list[dict]],
+    chart_type: str,
+    x_column: str,
+    y_column: str = None,
+    title: str = None,
+    color_column: str = None
 ) -> dict[str, Any]:
     """
-    Create an interactive chart from the LAST SQL query result.
-
-    IMPORTANT: You MUST call execute_sql FIRST to get data, then call this tool.
-    This tool automatically uses data from the previous SQL query.
+    Create an interactive chart from data.
 
     Args:
+        data: Data as JSON string OR list of dicts from SQL query result.
+              Pass the "data" field from execute_sql result.
         chart_type: Type of chart - "bar", "line", "pie", "scatter", "histogram"
         x_column: Column name for X axis (or labels for pie chart)
         y_column: Column name for Y axis (or values for pie chart). Optional for histogram.
@@ -47,15 +34,22 @@ def create_chart(
 
     Returns:
         Dictionary with 'success', 'chart_json' (Plotly JSON), and 'chart_type'
+
+    Example:
+        After execute_sql returns {"success": true, "data": [...]},
+        call: create_chart(data=[...], chart_type="bar", x_column="name", y_column="population")
     """
     try:
-        # Получаем данные из последнего SQL запроса
-        data_list = get_last_sql_data()
+        # Parse data - accept both string and list
+        if isinstance(data, str):
+            data_list = json.loads(data)
+        else:
+            data_list = data
 
         if not data_list:
             return {
                 "success": False,
-                "error": "No data available. Execute a SQL query first using execute_sql tool."
+                "error": "No data provided. Make sure to pass data from execute_sql result."
             }
 
         df = pd.DataFrame(data_list)
@@ -64,13 +58,13 @@ def create_chart(
         if x_column not in df.columns:
             return {
                 "success": False,
-                "error": f"Column '{x_column}' not found. Available columns: {list(df.columns)}"
+                "error": f"Column '{x_column}' not found. Available: {list(df.columns)}"
             }
 
         if y_column and y_column not in df.columns:
             return {
                 "success": False,
-                "error": f"Column '{y_column}' not found. Available columns: {list(df.columns)}"
+                "error": f"Column '{y_column}' not found. Available: {list(df.columns)}"
             }
 
         # Auto-generate title
@@ -78,7 +72,7 @@ def create_chart(
             if chart_type == "pie":
                 title = f"Distribution of {x_column}"
             elif y_column:
-                title = f"{y_column} by {x_column}"
+                title = f"{y_column.replace('_', ' ').title()} by {x_column.replace('_', ' ').title()}"
             else:
                 title = f"{chart_type.title()} Chart"
 
@@ -86,15 +80,28 @@ def create_chart(
         fig = None
 
         if chart_type == "bar":
-            fig = px.bar(df, x=x_column, y=y_column, title=title, color=color_column)
+            fig = px.bar(
+                df, x=x_column, y=y_column, title=title,
+                color=color_column if color_column and color_column in df.columns else None
+            )
         elif chart_type == "line":
-            fig = px.line(df, x=x_column, y=y_column, title=title, color=color_column, markers=True)
+            fig = px.line(
+                df, x=x_column, y=y_column, title=title,
+                color=color_column if color_column and color_column in df.columns else None,
+                markers=True
+            )
         elif chart_type == "pie":
             fig = px.pie(df, names=x_column, values=y_column, title=title)
         elif chart_type == "scatter":
-            fig = px.scatter(df, x=x_column, y=y_column, title=title, color=color_column)
+            fig = px.scatter(
+                df, x=x_column, y=y_column, title=title,
+                color=color_column if color_column and color_column in df.columns else None
+            )
         elif chart_type == "histogram":
-            fig = px.histogram(df, x=x_column, title=title, color=color_column)
+            fig = px.histogram(
+                df, x=x_column, title=title,
+                color=color_column if color_column and color_column in df.columns else None
+            )
         else:
             return {
                 "success": False,
@@ -109,16 +116,19 @@ def create_chart(
             showlegend=bool(color_column)
         )
 
-        chart_json = fig.to_json()
-
         return {
             "success": True,
-            "chart_json": chart_json,
+            "chart_json": fig.to_json(),
             "chart_type": chart_type,
             "title": title,
             "rows_visualized": len(df)
         }
 
+    except json.JSONDecodeError as e:
+        return {
+            "success": False,
+            "error": f"Invalid JSON data: {str(e)}"
+        }
     except Exception as e:
         return {
             "success": False,
@@ -127,21 +137,25 @@ def create_chart(
 
 
 @tool
-def suggest_chart_type(question: str = "") -> dict[str, Any]:
+def suggest_chart_type(data: Union[str, list[dict]], question: str = "") -> dict[str, Any]:
     """
-    Suggest the best chart type for the last SQL result.
+    Suggest the best chart type for given data.
 
     Args:
+        data: Data as JSON string or list of dicts from SQL query
         question: Original user question (helps determine intent)
 
     Returns:
         Dictionary with suggested chart type and reasoning
     """
     try:
-        data_list = get_last_sql_data()
+        if isinstance(data, str):
+            data_list = json.loads(data)
+        else:
+            data_list = data
 
         if not data_list:
-            return {"success": False, "error": "No data available. Execute SQL first."}
+            return {"success": False, "error": "No data to analyze"}
 
         df = pd.DataFrame(data_list)
         columns = list(df.columns)
@@ -188,8 +202,5 @@ def suggest_chart_type(question: str = "") -> dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
-PLOT_TOOLS = [create_chart, suggest_chart_type]
-
-
-# List of plot tools
+# Export tools
 PLOT_TOOLS = [create_chart, suggest_chart_type]

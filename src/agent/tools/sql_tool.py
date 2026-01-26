@@ -6,7 +6,6 @@ Allows the agent to execute SQL queries against the CityGrid database.
 
 from typing import Any
 from langchain_core.tools import tool
-import pandas as pd
 
 import sys
 from pathlib import Path
@@ -15,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from database import get_connection, validate_sql
-from .plot_tool import set_last_sql_data
 
 
 # === Schema Description for LLM ===
@@ -67,7 +65,20 @@ CityGrid Database Schema:
 
 @tool
 def execute_sql(query: str) -> dict[str, Any]:
-    """Execute a SQL query against the CityGrid database."""
+    """
+    Execute a SQL query against the CityGrid database.
+
+    Args:
+        query: SQL SELECT query to execute
+
+    Returns:
+        Dictionary with:
+        - success: bool
+        - data: list of records (use this for visualization tools!)
+        - row_count: number of rows
+        - columns: list of column names
+        - error: error message if failed
+    """
     safe_query, validation = validate_sql(query, add_limit=True)
 
     if not validation.is_valid:
@@ -90,8 +101,6 @@ def execute_sql(query: str) -> dict[str, Any]:
         }
 
     records = df.to_dict("records")
-
-    set_last_sql_data(records)
 
     return {
         "success": True,
@@ -130,7 +139,6 @@ def get_table_sample(table_name: str) -> dict[str, Any]:
     Returns:
         Dictionary with sample data from the table
     """
-    # Validate table name
     allowed_tables = {
         "districts", "road_network_nodes", "city_objects", "sensors",
         "smart_meters", "sensor_readings", "meter_readings",
