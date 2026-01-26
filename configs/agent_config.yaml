@@ -37,7 +37,7 @@ sql_validation:
 # === Agent Behavior ===
 agent:
   # Max iterations in ReAct loop
-  max_iterations: 10
+  max_iterations: 15
   
   # Show reasoning steps in UI
   show_reasoning: true
