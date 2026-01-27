@@ -102,7 +102,11 @@ class CityGridAgent:
     Features:
     - ReAct pattern for reasoning + acting
     - Auto-visualization when LLM forgets to call chart/map tools
+    - Separate visualization storage (not sent to LLM to save context)
     """
+
+    # Tools that produce visualizations
+    VIZ_TOOLS = {"create_chart", "create_district_map", "create_points_map", "create_road_map"}
 
     def __init__(
         self,
@@ -116,6 +120,7 @@ class CityGridAgent:
         self.max_iterations = max_iterations
         self.logger = AgentLogger(verbose=verbose)
         self.original_question = ""  # Store for auto-visualization logic
+        self.visualizations = []  # Store visualizations separately from messages
 
         # Initialize LLM with timeout to prevent hanging
         self.llm = ChatOllama(
@@ -190,13 +195,10 @@ class CityGridAgent:
         return {"messages": [response]}
 
     def _tools_node(self, state: AgentState) -> dict:
-        """Execute tool calls with auto-fetch protection for visualization tools."""
+        """Execute tool calls with auto-fetch and visualization storage."""
         messages = state["messages"]
         last_message = messages[-1]
         results = []
-
-        # Visualization tools that need data
-        VIZ_TOOLS = {"create_chart", "create_district_map", "create_points_map", "create_road_map"}
 
         # SQL queries for auto-fetch when viz tool called without data
         AUTO_FETCH_QUERIES = {
@@ -210,8 +212,8 @@ class CityGridAgent:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
 
-                # Check if visualization tool called with empty data
-                if tool_name in VIZ_TOOLS:
+                # Auto-fetch data for visualization tools if called with empty data
+                if tool_name in self.VIZ_TOOLS:
                     data_arg = tool_args.get("data", "")
                     is_empty = (data_arg == "" or data_arg == [] or data_arg is None)
 
@@ -220,22 +222,18 @@ class CityGridAgent:
                             "reason": f"{tool_name} called with empty data, fetching automatically",
                         })
 
-                        # For create_chart, we need to get data from previous SQL result or skip
                         if tool_name == "create_chart":
-                            # Check if there's SQL data in previous messages
                             sql_data = self._get_last_sql_data(messages)
                             if sql_data:
                                 tool_args["data"] = sql_data
                             else:
-                                # Can't auto-fetch for generic chart, return error
                                 results.append(ToolMessage(
-                                    content=json.dumps({"success": False, "error": "No data provided. Call execute_sql first to get data."}),
+                                    content=json.dumps({"success": False, "error": "No data provided. Call execute_sql first."}),
                                     name=tool_name,
                                     tool_call_id=tool_call.get("id", f"call_{tool_name}"),
                                 ))
                                 continue
                         else:
-                            # Auto-fetch data for map tools
                             query = AUTO_FETCH_QUERIES.get(tool_name)
                             if query:
                                 sql_tool = self.tools_by_name.get("execute_sql")
@@ -257,15 +255,58 @@ class CityGridAgent:
 
                 if tool_fn:
                     result = tool_fn.invoke(tool_args)
-                    result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+
+                    # Handle visualization tools specially
+                    if tool_name in self.VIZ_TOOLS and isinstance(result, dict) and result.get("success"):
+                        # Store visualization for UI (full data)
+                        if "chart_json" in result:
+                            self.visualizations.append({
+                                "type": "chart",
+                                "data": result["chart_json"],
+                                "title": result.get("title", "Chart"),
+                                "chart_type": result.get("chart_type"),
+                            })
+                            # Send short summary to LLM
+                            llm_result = {
+                                "success": True,
+                                "message": f"Chart created: {result.get('title', 'Chart')}",
+                                "chart_type": result.get("chart_type"),
+                                "rows_visualized": result.get("rows_visualized"),
+                            }
+                        elif "map_html" in result:
+                            self.visualizations.append({
+                                "type": "map",
+                                "data": result["map_html"],
+                                "title": result.get("title", "Map"),
+                            })
+                            # Send short summary to LLM
+                            llm_result = {
+                                "success": True,
+                                "message": f"Map created: {result.get('title', 'Map')}",
+                                "districts_count": result.get("districts_count"),
+                                "points_count": result.get("points_count"),
+                                "roads_count": result.get("roads_count"),
+                            }
+                            llm_result = {k: v for k, v in llm_result.items() if v is not None}
+                        else:
+                            llm_result = result
+
+                        llm_result_str = json.dumps(llm_result, ensure_ascii=False)
+                        self.logger.log("visualization_stored", {
+                            "type": self.visualizations[-1]["type"],
+                            "title": self.visualizations[-1]["title"],
+                        })
+                    else:
+                        # Non-visualization tool or error - send full result to LLM
+                        llm_result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
 
                     self.logger.log("tool_result", {
                         "tool_name": tool_name,
-                        "result": result_str[:500],
+                        "result": llm_result_str[:500],
                     })
 
                     results.append(ToolMessage(
-                        content=result_str,
+                        content=llm_result_str,
                         name=tool_name,
                         tool_call_id=tool_call.get("id", f"call_{tool_name}"),
                     ))
@@ -446,6 +487,7 @@ class CityGridAgent:
     def invoke(self, question: str) -> dict:
         """Run the agent on a question."""
         self.logger.clear()
+        self.visualizations = []  # Clear visualizations from previous run
         self.original_question = question  # Store for auto-viz
 
         self.logger.log("user_input", {"question": question})
@@ -461,6 +503,7 @@ class CityGridAgent:
         return {
             "answer": final_answer,
             "messages": messages,
+            "visualizations": self.visualizations.copy(),  # Return stored visualizations
             "steps": self._extract_steps(messages),
             "logs": self.logger.get_logs(),
         }
