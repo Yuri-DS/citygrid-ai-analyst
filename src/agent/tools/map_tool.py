@@ -115,8 +115,12 @@ def create_map(
             center_lat = df[lat_column].mean()
             center_lon = df[lon_column].mean()
 
-        # Create map
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=12)
+        # Create map with dark style
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=12,
+            tiles='CartoDB dark_matter'
+        )
 
         # Color mapping
         colors = ['blue', 'red', 'green', 'orange', 'purple', 'darkred',
@@ -203,16 +207,16 @@ def create_map(
                     popup=popup_text
                 ).add_to(m)
 
-        # Add legend if color column used
+        # Add legend if color column used (dark style)
         if color_column and color_map:
             legend_html = f'''
             <div style="position: fixed; bottom: 30px; right: 30px; z-index: 1000;
-                        background: rgba(255,255,255,0.9); padding: 10px; border-radius: 5px;
-                        border: 1px solid #ccc;">
-                <p style="margin: 0 0 5px 0; font-weight: bold;">{color_column}</p>
+                        background: rgba(0,0,0,0.8); padding: 10px; border-radius: 5px;
+                        border: 1px solid #444;">
+                <p style="color: white; margin: 0 0 5px 0; font-weight: bold;">{color_column}</p>
             '''
             for val, color in color_map.items():
-                legend_html += f'<p style="margin: 2px 0;"><span style="color: {color};">●</span> {val}</p>'
+                legend_html += f'<p style="color: white; margin: 2px 0;"><span style="color: {color};">●</span> {val}</p>'
             legend_html += '</div>'
             m.get_root().html.add_child(folium.Element(legend_html))
 
