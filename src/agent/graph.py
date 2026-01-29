@@ -57,8 +57,13 @@ class AgentLogger:
         if event_type == "user_input":
             print(f"Question: {data.get('question', '')}")
         elif event_type == "llm_input":
-            print(f"Messages count: {data.get('message_count', 0)}")
+            print(f"Messages count: {data.get('messages_count', data.get('message_count', 0))}")
             print(f"Last message type: {data.get('last_message_type', '')}")
+            if data.get('total_chars'):
+                print(f"Total chars: {data.get('total_chars'):,}")
+                print(f"Estimated tokens: ~{data.get('estimated_tokens'):,}")
+            if data.get('system_prompt_chars'):
+                print(f"  (system prompt: {data.get('system_prompt_chars'):,} chars)")
         elif event_type == "llm_output":
             print(f"Response type: {data.get('response_type', '')}")
             if data.get('tool_calls'):
@@ -74,8 +79,13 @@ class AgentLogger:
             print(f"Result: {result}...")
         elif event_type == "decision":
             print(f"Next: {data.get('next_step', '')} - {data.get('reason', '')}")
-        elif event_type == "auto_visualization":
-            print(f"Auto-creating: {data.get('tool', '')} for {data.get('reason', '')}")
+        elif event_type == "visualization_stored":
+            print(f"Stored: {data.get('type', '')} - {data.get('title', '')}")
+        elif event_type == "data_from_previous_sql":
+            print(f"Using data from previous SQL for {data.get('tool', '')} ({data.get('rows', 0)} rows)")
+        elif event_type == "final_answer":
+            answer = data.get('answer', '')[:200]
+            print(f"Answer: {answer}...")
 
         print()
 
@@ -101,12 +111,12 @@ class CityGridAgent:
 
     Features:
     - ReAct pattern for reasoning + acting
-    - Auto-visualization when LLM forgets to call chart/map tools
+    - Universal tools: agent decides how to use them
     - Separate visualization storage (not sent to LLM to save context)
     """
 
     # Tools that produce visualizations
-    VIZ_TOOLS = {"create_chart", "create_district_map", "create_points_map", "create_road_map"}
+    VIZ_TOOLS = {"create_chart", "create_map"}
 
     def __init__(
         self,
@@ -119,7 +129,6 @@ class CityGridAgent:
         self.model_name = model_name
         self.max_iterations = max_iterations
         self.logger = AgentLogger(verbose=verbose)
-        self.original_question = ""  # Store for auto-visualization logic
         self.visualizations = []  # Store visualizations separately from messages
 
         # Initialize LLM with timeout to prevent hanging
@@ -168,11 +177,39 @@ class CityGridAgent:
             "last_message_type": type(last_msg).__name__ if last_msg else None,
         })
 
+        # Calculate prompt size
+        def estimate_tokens(messages_list, system_prompt=None):
+            """Estimate token count. Rough approximation: 1 token ≈ 4 chars for English."""
+            total_chars = 0
+            if system_prompt:
+                total_chars += len(system_prompt)
+            for msg in messages_list:
+                if hasattr(msg, 'content'):
+                    total_chars += len(msg.content or "")
+                elif isinstance(msg, tuple):
+                    total_chars += len(msg[1] or "")
+            return total_chars, total_chars // 4  # chars, estimated tokens
+
         # Add system prompt for first message
         if len(messages) == 1 and isinstance(messages[0], HumanMessage):
             system_message = ("system", SYSTEM_PROMPT)
+            chars, tokens = estimate_tokens(messages, SYSTEM_PROMPT)
+            self.logger.log("llm_input", {
+                "messages_count": len(messages),
+                "system_prompt_chars": len(SYSTEM_PROMPT),
+                "total_chars": chars,
+                "estimated_tokens": tokens,
+                "last_message_type": type(messages[-1]).__name__,
+            })
             response = self.llm_with_tools.invoke([system_message] + list(messages))
         else:
+            chars, tokens = estimate_tokens(messages)
+            self.logger.log("llm_input", {
+                "messages_count": len(messages),
+                "total_chars": chars,
+                "estimated_tokens": tokens,
+                "last_message_type": type(messages[-1]).__name__,
+            })
             response = self.llm_with_tools.invoke(messages)
 
         # Log output
@@ -195,56 +232,41 @@ class CityGridAgent:
         return {"messages": [response]}
 
     def _tools_node(self, state: AgentState) -> dict:
-        """Execute tool calls with auto-fetch and visualization storage."""
+        """Execute tool calls and store visualizations separately."""
         messages = state["messages"]
         last_message = messages[-1]
         results = []
-
-        # SQL queries for auto-fetch when viz tool called without data
-        AUTO_FETCH_QUERIES = {
-            "create_district_map": "SELECT name, center_lat, center_lon, population, type FROM districts",
-            "create_points_map": "SELECT s.sensor_id, s.sensor_type, co.lat, co.lon FROM sensors s JOIN city_objects co ON s.object_id = co.object_id LIMIT 500",
-            "create_road_map": "SELECT name, road_type, condition, start_lat, start_lon, end_lat, end_lon FROM city_objects WHERE object_type='road_segment' LIMIT 300",
-        }
 
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
 
-                # Auto-fetch data for visualization tools if called with empty data
+                # Check if visualization tool called with empty data
                 if tool_name in self.VIZ_TOOLS:
                     data_arg = tool_args.get("data", "")
                     is_empty = (data_arg == "" or data_arg == [] or data_arg is None)
 
                     if is_empty:
-                        self.logger.log("auto_fetch", {
-                            "reason": f"{tool_name} called with empty data, fetching automatically",
-                        })
-
-                        if tool_name == "create_chart":
-                            sql_data = self._get_last_sql_data(messages)
-                            if sql_data:
-                                tool_args["data"] = sql_data
-                            else:
-                                results.append(ToolMessage(
-                                    content=json.dumps({"success": False, "error": "No data provided. Call execute_sql first."}),
-                                    name=tool_name,
-                                    tool_call_id=tool_call.get("id", f"call_{tool_name}"),
-                                ))
-                                continue
+                        # Try to get data from previous SQL result
+                        sql_data = self._get_last_sql_data(messages)
+                        if sql_data:
+                            tool_args["data"] = sql_data
+                            self.logger.log("data_from_previous_sql", {
+                                "tool": tool_name,
+                                "rows": len(sql_data),
+                            })
                         else:
-                            query = AUTO_FETCH_QUERIES.get(tool_name)
-                            if query:
-                                sql_tool = self.tools_by_name.get("execute_sql")
-                                if sql_tool:
-                                    sql_result = sql_tool.invoke({"query": query})
-                                    if sql_result.get("success") and sql_result.get("data"):
-                                        tool_args["data"] = sql_result["data"]
-                                        self.logger.log("auto_fetch_success", {
-                                            "tool": tool_name,
-                                            "rows": len(sql_result["data"]),
-                                        })
+                            # No auto-fetch - return error, let agent call execute_sql
+                            results.append(ToolMessage(
+                                content=json.dumps({
+                                    "success": False,
+                                    "error": "No data provided. Call execute_sql first to get data, then call this tool with the result."
+                                }),
+                                name=tool_name,
+                                tool_call_id=tool_call.get("id", f"call_{tool_name}"),
+                            ))
+                            continue
 
                 self.logger.log("tool_call", {
                     "tool_name": tool_name,
@@ -283,9 +305,8 @@ class CityGridAgent:
                             llm_result = {
                                 "success": True,
                                 "message": f"Map created: {result.get('title', 'Map')}",
-                                "districts_count": result.get("districts_count"),
-                                "points_count": result.get("points_count"),
-                                "roads_count": result.get("roads_count"),
+                                "items_count": result.get("items_count"),
+                                "map_type": result.get("map_type"),
                             }
                             llm_result = {k: v for k, v in llm_result.items() if v is not None}
                         else:
@@ -345,150 +366,16 @@ class CityGridAgent:
             })
             return "tools"
 
-        # Check if we should auto-create visualization
-        auto_viz = self._check_auto_visualization(state)
-        if auto_viz:
-            self.logger.log("auto_visualization", {
-                "tool": auto_viz["name"],
-                "reason": "User asked for visualization but LLM didn't create it"
-            })
-            # Inject tool call
-            last_message.tool_calls = [auto_viz]
-            return "tools"
-
         self.logger.log("decision", {
             "next_step": "end",
             "reason": "LLM provided final answer",
         })
         return "end"
 
-    def _check_auto_visualization(self, state: AgentState) -> dict | None:
-        """
-        Check if we should automatically create a visualization.
-
-        Returns tool call dict if yes, None if no.
-        """
-        messages = state["messages"]
-
-        # Check if user wanted visualization
-        viz_type = self._detect_visualization_intent(self.original_question)
-        if not viz_type:
-            return None
-
-        # Check if visualization was already created
-        viz_tools = {"create_chart", "create_district_map", "create_points_map", "create_road_map"}
-        for msg in messages:
-            if hasattr(msg, "name") and msg.name in viz_tools:
-                return None  # Already done
-
-        # Find SQL result data
-        sql_data = None
-        for msg in reversed(messages):
-            if hasattr(msg, "name") and msg.name == "execute_sql":
-                try:
-                    result = json.loads(msg.content)
-                    if result.get("success") and result.get("data"):
-                        sql_data = result["data"]
-                        break
-                except:
-                    pass
-
-        if not sql_data:
-            return None
-
-        # Build auto visualization call
-        return self._build_auto_viz_call(sql_data, viz_type, self.original_question)
-
-    def _detect_visualization_intent(self, question: str) -> str | None:
-        """Detect if user wants chart or map."""
-        q = question.lower()
-
-        # Explicit chart types
-        if any(kw in q for kw in ["bar chart", "pie chart", "line chart", "histogram", "scatter"]):
-            return "chart"
-
-        # Map keywords
-        if any(kw in q for kw in ["on a map", "on map", "show map", "display map"]):
-            return "map"
-
-        # Generic visualization words
-        if any(kw in q for kw in ["chart", "graph", "plot", "visualize"]):
-            return "chart"
-
-        # "show" with data context (not just "show me the data")
-        if "show" in q and not any(kw in q for kw in ["show me the data", "show data", "show the data"]):
-            if any(kw in q for kw in ["distribution", "by", "per", "across"]):
-                return "chart"
-
-        return None
-
-    def _build_auto_viz_call(self, data: list[dict], viz_type: str, question: str) -> dict:
-        """Build automatic visualization tool call."""
-        if not data:
-            return None
-
-        columns = list(data[0].keys())
-        q = question.lower()
-
-        if viz_type == "map":
-            # Check for coordinates
-            if "center_lat" in columns and "center_lon" in columns:
-                value_col = next((c for c in columns if c not in ["name", "center_lat", "center_lon", "type", "district_id"]), "population")
-                return {
-                    "name": "create_district_map",
-                    "args": {"data": data, "value_column": value_col, "title": "Districts Map"},
-                    "id": "auto_map"
-                }
-            lat_cols = [c for c in columns if "lat" in c.lower()]
-            lon_cols = [c for c in columns if "lon" in c.lower()]
-            if lat_cols and lon_cols:
-                return {
-                    "name": "create_points_map",
-                    "args": {"data": data, "lat_column": lat_cols[0], "lon_column": lon_cols[0], "title": "Points Map"},
-                    "id": "auto_points_map"
-                }
-
-        # Chart - find x (categorical) and y (numeric) columns
-        x_col, y_col = None, None
-        for col in columns:
-            sample = data[0].get(col)
-            if isinstance(sample, str) and not x_col:
-                x_col = col
-            elif isinstance(sample, (int, float)) and not y_col:
-                y_col = col
-
-        if not (x_col and y_col):
-            return None
-
-        # Determine chart type
-        if "pie" in q or "distribution" in q:
-            chart_type = "pie"
-        elif "line" in q or "trend" in q or "over time" in q:
-            chart_type = "line"
-        elif "scatter" in q:
-            chart_type = "scatter"
-        else:
-            chart_type = "bar"
-
-        title = f"{y_col.replace('_', ' ').title()} by {x_col.replace('_', ' ').title()}"
-
-        return {
-            "name": "create_chart",
-            "args": {
-                "data": data,
-                "chart_type": chart_type,
-                "x_column": x_col,
-                "y_column": y_col,
-                "title": title
-            },
-            "id": "auto_chart"
-        }
-
     def invoke(self, question: str) -> dict:
         """Run the agent on a question."""
         self.logger.clear()
         self.visualizations = []  # Clear visualizations from previous run
-        self.original_question = question  # Store for auto-viz
 
         self.logger.log("user_input", {"question": question})
 

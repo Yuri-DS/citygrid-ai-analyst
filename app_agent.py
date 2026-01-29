@@ -84,9 +84,13 @@ def get_agent(model_name: str):
     return st.session_state[cache_key]
 
 
-def safe_invoke(agent, prompt, timeout=300, retries=1):
+def safe_invoke(agent, prompt, timeout=600, retries=0):
     """
-    Safely invoke agent with timeout and retry.
+    Safely invoke agent with timeout.
+
+    Args:
+        timeout: Max seconds to wait (default 600 = 10 min for slow CPU models)
+        retries: Number of retries on failure (default 0 - no retry to avoid losing results)
     """
     for attempt in range(retries + 1):
         try:
@@ -306,9 +310,9 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
             try:
                 agent = get_agent(st.session_state.selected_model)
 
-                with st.spinner("🤔 Thinking... (this may take a minute on CPU)"):
+                with st.spinner("🤔 Thinking... (this may take a few minutes on CPU)"):
                     start_time = time.time()
-                    result = safe_invoke(agent, prompt, timeout=300, retries=1)
+                    result = safe_invoke(agent, prompt, timeout=600)  # 10 min for slow models
                     elapsed = time.time() - start_time
                     print(f"DEBUG: Agent completed in {elapsed:.1f}s")
 
@@ -363,21 +367,21 @@ if prompt := st.chat_input("Ask about city data...", disabled=not st.session_sta
 
     st.rerun()
 
-# Example questions
-if not st.session_state.messages:
-    st.divider()
-    st.subheader("💡 Try these questions")
-
-    examples = [
-        "How many districts are in the city?",
-        "Show districts by population as a bar chart",
-        "Show sensor type distribution as a pie chart",
-        "Show all districts on a map",
-    ]
-
-    cols = st.columns(2)
-    for i, example in enumerate(examples):
-        with cols[i % 2]:
-            if st.button(example, key=f"ex_{i}", use_container_width=True):
-                st.session_state.messages.append({"role": "user", "content": example})
-                st.rerun()
+# # Example questions
+# if not st.session_state.messages:
+#     st.divider()
+#     st.subheader("💡 Try these questions")
+#
+#     examples = [
+#         "How many districts are in the city?",
+#         "Show districts by population as a bar chart",
+#         "Show sensor type distribution as a pie chart",
+#         "Show all districts on a map",
+#     ]
+#
+#     cols = st.columns(2)
+#     for i, example in enumerate(examples):
+#         with cols[i % 2]:
+#             if st.button(example, key=f"ex_{i}", use_container_width=True):
+#                 st.session_state.messages.append({"role": "user", "content": example})
+#                 st.rerun()
