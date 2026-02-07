@@ -22,6 +22,7 @@ from agent import create_agent
 # === Configuration ===
 DB_PATH = Path(__file__).parent / "data" / "citygrid.db"
 OLLAMA_BASE_URL = "http://localhost:11434"
+MAX_PROMPT_CHARS = 15_000  # Max user input length (characters)
 
 # Available models - Ollama (add your custom models here)
 AVAILABLE_MODELS = {
@@ -371,6 +372,13 @@ for msg_idx, message in enumerate(st.session_state.messages):
 
 # Chat input
 if prompt := st.chat_input("Ask about city data...", disabled=not st.session_state.agent_initialized):
+    if len(prompt) > MAX_PROMPT_CHARS:
+        st.warning(
+            f"⚠️ Your question is too long ({len(prompt):,} characters). "
+            f"Maximum allowed: {MAX_PROMPT_CHARS:,}. Please make it shorter."
+        )
+        st.stop()
+
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("user"):

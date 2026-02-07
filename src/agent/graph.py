@@ -144,9 +144,12 @@ class CityGridAgent:
 
     # Tools that produce visualizations
     VIZ_TOOLS = {"create_chart", "create_map"}
-    
+
     # Max retries for validation errors per tool call
     MAX_VALIDATION_RETRIES = 2
+
+    # Max total characters in context sent to LLM (~7K tokens)
+    MAX_CONTEXT_CHARS = 30_000
 
     def __init__(
         self,
@@ -259,6 +262,25 @@ class CityGridAgent:
 
         return graph.compile()
 
+    def _trim_context(self, messages, max_chars: int):
+        """Trim oldest ToolMessage bodies to fit context within max_chars.
+
+        Replaces content of the oldest ToolMessages first, preserving
+        HumanMessage/AIMessage and the most recent tool results.
+        """
+        messages = list(messages)
+        for i in range(len(messages)):
+            total = sum(len(m.content or "") for m in messages)
+            if total <= max_chars:
+                break
+            if isinstance(messages[i], ToolMessage):
+                messages[i] = ToolMessage(
+                    content='{"note": "Content trimmed to save context"}',
+                    name=messages[i].name,
+                    tool_call_id=messages[i].tool_call_id,
+                )
+        return messages
+
     def _agent_node(self, state: AgentState) -> dict:
         """Agent reasoning node."""
         messages = state["messages"]
@@ -339,6 +361,17 @@ class CityGridAgent:
                 response = self.llm_with_tools.invoke([system_message] + list(messages))
             else:
                 chars, tokens = estimate_tokens(messages)
+                # Trim context if too large
+                if chars > self.MAX_CONTEXT_CHARS:
+                    messages = self._trim_context(messages, self.MAX_CONTEXT_CHARS)
+                    trimmed_chars, trimmed_tokens = estimate_tokens(messages)
+                    self.logger.log("context_truncated", {
+                        "original_chars": chars,
+                        "trimmed_chars": trimmed_chars,
+                        "original_tokens": tokens,
+                        "trimmed_tokens": trimmed_tokens,
+                    })
+                    chars, tokens = trimmed_chars, trimmed_tokens
                 self.logger.log("llm_input", {
                     "messages_count": len(messages),
                     "total_chars": chars,
