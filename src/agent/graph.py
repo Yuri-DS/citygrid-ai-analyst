@@ -349,6 +349,16 @@ class CityGridAgent:
         finally:
             _restore_torch_patch(orig_torch_classes)
 
+        # Strip hallucinated base64 images from response content
+        if response.content:
+            cleaned = re.sub(
+                r'!\[[^\]]*\]\(data:image/[^)]+\)',
+                '[Chart should be created using create_chart tool]',
+                response.content,
+            )
+            if cleaned != response.content:
+                response.content = cleaned
+
         # Log output
         tool_calls = None
         if hasattr(response, "tool_calls") and response.tool_calls:
