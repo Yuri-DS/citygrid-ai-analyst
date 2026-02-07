@@ -1,5 +1,22 @@
 # CityGrid Data Guide
 
+## Disambiguation: match concept to table
+
+Similar wording can mean different concepts. Use the **concept** (what the user cares about) to pick the right table, not just keywords.
+
+| Concept | Table(s) | Key filter / columns | Do not use |
+|---------|----------|----------------------|------------|
+| Road surface condition (pavement state: good, fair, poor) | city_objects | object_type = 'road_segment', condition | public_transport_trips |
+| Trip delays, routes, passenger counts, weather during trips | public_transport_trips | delay_minutes, stop_object_id, scheduled_ts, weather_condition | city_objects.condition (that is pavement, not trips) |
+| Complaints or requests by category (noise, pothole, etc.) | citizen_requests | category, district_id, status, priority | sensors, meter_readings |
+| Sensor measurements over time (noise, PM2.5, traffic, temp) | sensor_readings + sensors | sensor_id, ts, value, sensor_type | citizen_requests (that is complaints) |
+| Utility consumption (electricity, water, heating) | meter_readings + smart_meters | meter_id, ts, value, utility_type | sensor_readings |
+| Physical objects on a map (buildings, roads, stops, parks) | city_objects | object_type, lat/lon or start_lat/lon, end_lat/lon | Use object_type to filter; roads = road_segment |
+
+**Aggregation by district:** For any table that has district_id, join districts for name and center_lat, center_lon (for maps). For city_objects, always filter by object_type when the question is about one kind of object (e.g. roads → object_type = 'road_segment').
+
+---
+
 ## Working with Different Data Types
 
 ### Categorical Data
@@ -136,5 +153,8 @@ GROUP BY d.district_id
 2. **LIMIT for exploration:**
    When exploring data structure, use LIMIT to avoid large result sets.
 
-3. **Specific object_type:**
+3. **LIMIT for map or chart:**
+   For visualization (map or chart), use execute_sql with a LIMIT that matches the table size (see schema for row counts). Do not use get_table_sample for visualization — it returns only a small sample. Use a sufficient LIMIT or omit LIMIT so the system default applies.
+
+4. **Specific object_type:**
    city_objects is large. Filter by object_type when possible.

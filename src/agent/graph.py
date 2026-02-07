@@ -7,6 +7,7 @@ ReAct-style agent that can query the database and analyze results.
 from typing import Annotated, TypedDict, Sequence
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from datetime import datetime
@@ -16,10 +17,13 @@ import re
 import sys
 from pathlib import Path
 
+# Import ValidationError for catching malformed tool calls
+from pydantic import ValidationError
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agent.tools import ALL_TOOLS
-from agent.prompts import SYSTEM_PROMPT
+from agent.prompts import SYSTEM_PROMPT, CHECKLIST_PROMPT
 
 
 # === Logging ===
@@ -86,6 +90,25 @@ class AgentLogger:
         elif event_type == "final_answer":
             answer = data.get('answer', '')[:200]
             print(f"Answer: {answer}...")
+        elif event_type == "checklist_generated":
+            print(f"Checklist: {data.get('checklist', [])}")
+            if data.get('error'):
+                print(f"Error: {data['error']}")
+        elif event_type == "reminder_sent":
+            print(f"Reminder: remaining {data.get('remaining', [])}")
+        elif event_type == "checklist_done_updated":
+            checklist = data.get("checklist", [])
+            checklist_done = data.get("checklist_done", {})
+            completed = [t for t in checklist if checklist_done.get(t, False)]
+            remaining = [t for t in checklist if not checklist_done.get(t, False)]
+            print(f"Completed: {completed}")
+            print(f"Remaining: {remaining}")
+        elif event_type == "tool_validation_error":
+            print(f"Tool: {data.get('tool_name', '')}")
+            print(f"Invalid args: {data.get('invalid_args', {})}")
+            print(f"Error: {data.get('error', '')}")
+        elif event_type == "tool_retry_requested":
+            print(f"Retry requested for: {data.get('tool_name', '')}")
 
         print()
 
@@ -98,9 +121,12 @@ class AgentLogger:
 
 # === Agent State ===
 
+
 class AgentState(TypedDict):
     """State of the agent during execution."""
     messages: Annotated[Sequence[BaseMessage], add_messages]
+    checklist: list[str]
+    checklist_done: dict[str, bool]
 
 
 # === Agent Graph ===
@@ -113,10 +139,14 @@ class CityGridAgent:
     - ReAct pattern for reasoning + acting
     - Universal tools: agent decides how to use them
     - Separate visualization storage (not sent to LLM to save context)
+    - ValidationError retry: asks LLM to fix malformed tool calls
     """
 
     # Tools that produce visualizations
     VIZ_TOOLS = {"create_chart", "create_map"}
+    
+    # Max retries for validation errors per tool call
+    MAX_VALIDATION_RETRIES = 2
 
     def __init__(
         self,
@@ -125,19 +155,33 @@ class CityGridAgent:
         temperature: float = 0.1,
         max_iterations: int = 10,
         verbose: bool = True,
+        provider: str = "ollama",
+        api_key: str | None = None,
     ):
         self.model_name = model_name
+        self.provider = provider
         self.max_iterations = max_iterations
         self.logger = AgentLogger(verbose=verbose)
         self.visualizations = []  # Store visualizations separately from messages
 
-        # Initialize LLM with timeout to prevent hanging
-        self.llm = ChatOllama(
-            model=model_name,
-            base_url=ollama_base_url,
-            temperature=temperature,
-            timeout=180,  # 3 minutes timeout - prevents infinite hang
-        )
+        if provider == "openai":
+            import os
+            key = api_key or os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise ValueError("OpenAI API key required: set OPENAI_API_KEY or pass api_key=...")
+            self.llm = ChatOpenAI(
+                model=model_name,
+                temperature=temperature,
+                api_key=key,
+            )
+        else:
+            # Ollama (default)
+            self.llm = ChatOllama(
+                model=model_name,
+                base_url=ollama_base_url,
+                temperature=temperature,
+                timeout=180,  # 3 minutes timeout - prevents infinite hang
+            )
 
         # Bind tools to LLM
         self.tools = ALL_TOOLS
@@ -147,12 +191,58 @@ class CityGridAgent:
         # Build graph
         self.graph = self._build_graph()
 
+    # Checklist uses only workflow tools; exclude helpers (get_table_sample, get_schema)
+    # so the planner never suggests "sample 5 rows" for map/chart requests.
+    CHECKLIST_TOOLS = {"search_documentation", "execute_sql", "create_chart", "create_map"}
+
+    def _generate_checklist(self, question: str) -> list[str]:
+        """Generate required tool names for this request via one LLM call (no tools)."""
+        allowed_set = self.CHECKLIST_TOOLS
+        allowed_tools_str = ", ".join(sorted(allowed_set))
+        try:
+            prompt = CHECKLIST_PROMPT.format(allowed_tools=allowed_tools_str, question=question)
+            response = self.llm.invoke([HumanMessage(content=prompt)])
+            content = (response.content or "").strip()
+            # Extract JSON array (allow markdown code block)
+            if "```" in content:
+                match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", content, re.DOTALL)
+                if match:
+                    content = match.group(1)
+            parsed = json.loads(content)
+            if not isinstance(parsed, list):
+                return []
+            # Filter to allowed tools, preserve order
+            checklist = [str(x).strip() for x in parsed if str(x).strip() in allowed_set]
+            # Ensure execute_sql before first viz tool
+            viz = self.VIZ_TOOLS
+            for i, name in enumerate(checklist):
+                if name in viz:
+                    if "execute_sql" not in checklist[:i]:
+                        checklist.insert(i, "execute_sql")
+                    break
+            self.logger.log("checklist_generated", {"checklist": checklist})
+            return checklist
+        except (json.JSONDecodeError, re.error) as e:
+            self.logger.log("checklist_generated", {"error": str(e), "checklist": []})
+            return []
+
+    def _reminder_node(self, state: AgentState) -> dict:
+        """Append a reminder message when checklist is not done and LLM replied with text only."""
+        checklist = state.get("checklist") or []
+        checklist_done = state.get("checklist_done") or {}
+        remaining = [t for t in checklist if not checklist_done.get(t, True)]
+        next_step = remaining[0] if remaining else ""
+        msg = f"Task not complete. The NEXT required step is: {next_step}. Call this tool now — do not call other tools first. Do not respond with only text."
+        self.logger.log("reminder_sent", {"remaining": remaining})
+        return {"messages": [HumanMessage(content=msg)]}
+
     def _build_graph(self) -> StateGraph:
         """Build the LangGraph agent graph."""
         graph = StateGraph(AgentState)
 
         graph.add_node("agent", self._agent_node)
         graph.add_node("tools", self._tools_node)
+        graph.add_node("reminder", self._reminder_node)
 
         graph.set_entry_point("agent")
         graph.add_conditional_edges(
@@ -161,9 +251,11 @@ class CityGridAgent:
             {
                 "tools": "tools",
                 "end": END,
+                "reminder": "reminder",
             }
         )
         graph.add_edge("tools", "agent")
+        graph.add_edge("reminder", "agent")
 
         return graph.compile()
 
@@ -176,6 +268,16 @@ class CityGridAgent:
             "message_count": len(messages),
             "last_message_type": type(last_msg).__name__ if last_msg else None,
         })
+
+        # Build system prompt: base + optional "Remaining steps" when checklist not done
+        system_prompt = SYSTEM_PROMPT
+        checklist = state.get("checklist") or []
+        checklist_done = state.get("checklist_done") or {}
+        if checklist:
+            remaining = [t for t in checklist if not checklist_done.get(t, True)]
+            if remaining:
+                next_step = remaining[0]
+                system_prompt += f"\n\nChecklist order: {checklist}. The NEXT required step is: {next_step}. You MUST call this tool now — do not call other tools (e.g. search_documentation) before it unless they are in the checklist. Do not respond with only text."
 
         # Calculate prompt size
         def estimate_tokens(messages_list, system_prompt=None):
@@ -190,27 +292,62 @@ class CityGridAgent:
                     total_chars += len(msg[1] or "")
             return total_chars, total_chars // 4  # chars, estimated tokens
 
-        # Add system prompt for first message
-        if len(messages) == 1 and isinstance(messages[0], HumanMessage):
-            system_message = ("system", SYSTEM_PROMPT)
-            chars, tokens = estimate_tokens(messages, SYSTEM_PROMPT)
-            self.logger.log("llm_input", {
-                "messages_count": len(messages),
-                "system_prompt_chars": len(SYSTEM_PROMPT),
-                "total_chars": chars,
-                "estimated_tokens": tokens,
-                "last_message_type": type(messages[-1]).__name__,
-            })
-            response = self.llm_with_tools.invoke([system_message] + list(messages))
-        else:
-            chars, tokens = estimate_tokens(messages)
-            self.logger.log("llm_input", {
-                "messages_count": len(messages),
-                "total_chars": chars,
-                "estimated_tokens": tokens,
-                "last_message_type": type(messages[-1]).__name__,
-            })
-            response = self.llm_with_tools.invoke(messages)
+        # Workaround: torch.classes can raise when something touches __path__._path
+        # (e.g. during message handling). Patch to avoid crash so LLM invoke completes.
+        def _apply_torch_patch():
+            try:
+                import torch
+                if not hasattr(torch, "classes"):
+                    return None
+                _orig_classes = torch.classes
+                _dummy_class = type("_DummyTorchClass", (), {})
+                _dummy_ns = type("_DummyNs", (), {"__getattr__": lambda self, _: _dummy_class})()
+                def _safe_getattr(self, name):
+                    if name == "__path__":
+                        return _dummy_ns
+                    try:
+                        return getattr(_orig_classes, name)
+                    except Exception:
+                        return _dummy_ns
+                _safe_classes = type("_SafeClasses", (), {"__getattr__": _safe_getattr})()
+                torch.classes = _safe_classes
+                return _orig_classes
+            except Exception:
+                return None
+
+        def _restore_torch_patch(orig):
+            if orig is not None:
+                try:
+                    import torch
+                    torch.classes = orig
+                except Exception:
+                    pass
+
+        orig_torch_classes = _apply_torch_patch()
+        try:
+            # Add system prompt for first message
+            if len(messages) == 1 and isinstance(messages[0], HumanMessage):
+                system_message = ("system", system_prompt)
+                chars, tokens = estimate_tokens(messages, system_prompt)
+                self.logger.log("llm_input", {
+                    "messages_count": len(messages),
+                    "system_prompt_chars": len(system_prompt),
+                    "total_chars": chars,
+                    "estimated_tokens": tokens,
+                    "last_message_type": type(messages[-1]).__name__,
+                })
+                response = self.llm_with_tools.invoke([system_message] + list(messages))
+            else:
+                chars, tokens = estimate_tokens(messages)
+                self.logger.log("llm_input", {
+                    "messages_count": len(messages),
+                    "total_chars": chars,
+                    "estimated_tokens": tokens,
+                    "last_message_type": type(messages[-1]).__name__,
+                })
+                response = self.llm_with_tools.invoke(messages)
+        finally:
+            _restore_torch_patch(orig_torch_classes)
 
         # Log output
         tool_calls = None
@@ -231,8 +368,33 @@ class CityGridAgent:
 
         return {"messages": [response]}
 
+    def _get_tool_schema(self, tool_name: str) -> str:
+        """Get tool schema as a string for error messages."""
+        tool = self.tools_by_name.get(tool_name)
+        if not tool:
+            return "Tool not found"
+        
+        # Extract schema from tool
+        try:
+            schema = tool.args_schema.model_json_schema() if hasattr(tool, 'args_schema') else {}
+            properties = schema.get("properties", {})
+            required = schema.get("required", [])
+            
+            params = []
+            for name, info in properties.items():
+                param_type = info.get("type", "any")
+                req = "(required)" if name in required else "(optional)"
+                params.append(f"  - {name}: {param_type} {req}")
+            
+            return "\n".join(params) if params else "No parameters"
+        except Exception:
+            return "Schema unavailable"
+
     def _tools_node(self, state: AgentState) -> dict:
-        """Execute tool calls and store visualizations separately."""
+        """Execute tool calls and store visualizations separately.
+        
+        Handles ValidationError by returning error message to LLM for retry.
+        """
         messages = state["messages"]
         last_message = messages[-1]
         results = []
@@ -248,8 +410,8 @@ class CityGridAgent:
                     is_empty = (data_arg == "" or data_arg == [] or data_arg is None)
 
                     if is_empty:
-                        # Try to get data from previous SQL result
-                        sql_data = self._get_last_sql_data(messages)
+                        # Try to get data from previous SQL result (full data from state, not truncated message)
+                        sql_data = self._last_sql_data or self._get_last_sql_data(messages)
                         if sql_data:
                             tool_args["data"] = sql_data
                             self.logger.log("data_from_previous_sql", {
@@ -274,63 +436,122 @@ class CityGridAgent:
                 })
 
                 tool_fn = self.tools_by_name.get(tool_name)
-
                 if tool_fn:
-                    result = tool_fn.invoke(tool_args)
+                    try:
+                        # Attempt to invoke the tool
+                        result = tool_fn.invoke(tool_args)
+                        
+                        # Handle visualization tools specially
+                        if tool_name in self.VIZ_TOOLS and isinstance(result, dict) and result.get("success"):
+                            # Store visualization for UI (full data)
+                            if "chart_json" in result:
+                                self.visualizations.append({
+                                    "type": "chart",
+                                    "data": result["chart_json"],
+                                    "title": result.get("title", "Chart"),
+                                    "chart_type": result.get("chart_type"),
+                                })
+                                # Send short summary to LLM
+                                llm_result = {
+                                    "success": True,
+                                    "message": f"Chart created: {result.get('title', 'Chart')}",
+                                    "chart_type": result.get("chart_type"),
+                                    "rows_visualized": result.get("rows_visualized"),
+                                }
+                            elif "map_html" in result:
+                                self.visualizations.append({
+                                    "type": "map",
+                                    "data": result["map_html"],
+                                    "title": result.get("title", "Map"),
+                                })
+                                # Send short summary to LLM
+                                llm_result = {
+                                    "success": True,
+                                    "message": f"Map created: {result.get('title', 'Map')}",
+                                    "items_count": result.get("items_count"),
+                                    "map_type": result.get("map_type"),
+                                }
+                                llm_result = {k: v for k, v in llm_result.items() if v is not None}
+                            else:
+                                llm_result = result
 
-                    # Handle visualization tools specially
-                    if tool_name in self.VIZ_TOOLS and isinstance(result, dict) and result.get("success"):
-                        # Store visualization for UI (full data)
-                        if "chart_json" in result:
-                            self.visualizations.append({
-                                "type": "chart",
-                                "data": result["chart_json"],
-                                "title": result.get("title", "Chart"),
-                                "chart_type": result.get("chart_type"),
+                            llm_result_str = json.dumps(llm_result, ensure_ascii=False)
+                            self.logger.log("visualization_stored", {
+                                "type": self.visualizations[-1]["type"],
+                                "title": self.visualizations[-1]["title"],
                             })
-                            # Send short summary to LLM
-                            llm_result = {
-                                "success": True,
-                                "message": f"Chart created: {result.get('title', 'Chart')}",
-                                "chart_type": result.get("chart_type"),
-                                "rows_visualized": result.get("rows_visualized"),
-                            }
-                        elif "map_html" in result:
-                            self.visualizations.append({
-                                "type": "map",
-                                "data": result["map_html"],
-                                "title": result.get("title", "Map"),
-                            })
-                            # Send short summary to LLM
-                            llm_result = {
-                                "success": True,
-                                "message": f"Map created: {result.get('title', 'Map')}",
-                                "items_count": result.get("items_count"),
-                                "map_type": result.get("map_type"),
-                            }
-                            llm_result = {k: v for k, v in llm_result.items() if v is not None}
                         else:
-                            llm_result = result
+                            # Non-visualization tool or error - send full result to LLM
+                            if tool_name == "execute_sql" and isinstance(result, dict) and result.get("success") and result.get("data"):
+                                # Store full data for create_map/create_chart; send truncated to LLM to avoid token explosion
+                                self._last_sql_data = result["data"]
+                                max_rows_for_llm = 30
+                                trunc = result["data"][:max_rows_for_llm]
+                                truncated_result = {
+                                    "success": True,
+                                    "row_count": result["row_count"],
+                                    "columns": result["columns"],
+                                    "query_executed": result.get("query_executed"),
+                                    "data": trunc,
+                                    "_truncated": len(result["data"]) > max_rows_for_llm,
+                                    "message": f"Result has {result['row_count']} rows; first {len(trunc)} shown. Full data available for create_map/create_chart." if len(result["data"]) > max_rows_for_llm else None,
+                                }
+                                truncated_result = {k: v for k, v in truncated_result.items() if v is not None}
+                                llm_result_str = json.dumps(truncated_result, ensure_ascii=False)
+                            else:
+                                llm_result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
+                                if tool_name == "execute_sql":
+                                    self._last_sql_data = result.get("data") if isinstance(result, dict) else None
 
-                        llm_result_str = json.dumps(llm_result, ensure_ascii=False)
-                        self.logger.log("visualization_stored", {
-                            "type": self.visualizations[-1]["type"],
-                            "title": self.visualizations[-1]["title"],
+                        self.logger.log("tool_result", {
+                            "tool_name": tool_name,
+                            "result": llm_result_str[:500],
                         })
-                    else:
-                        # Non-visualization tool or error - send full result to LLM
-                        llm_result_str = json.dumps(result, ensure_ascii=False) if isinstance(result, dict) else str(result)
 
-                    self.logger.log("tool_result", {
-                        "tool_name": tool_name,
-                        "result": llm_result_str[:500],
-                    })
-
-                    results.append(ToolMessage(
-                        content=llm_result_str,
-                        name=tool_name,
-                        tool_call_id=tool_call.get("id", f"call_{tool_name}"),
-                    ))
+                        results.append(ToolMessage(
+                            content=llm_result_str,
+                            name=tool_name,
+                            tool_call_id=tool_call.get("id", f"call_{tool_name}"),
+                        ))
+                        
+                    except ValidationError as e:
+                        # LLM generated malformed arguments - ask it to fix
+                        self.logger.log("tool_validation_error", {
+                            "tool_name": tool_name,
+                            "invalid_args": tool_args,
+                            "error": str(e),
+                        })
+                        
+                        # Build helpful error message for LLM
+                        tool_schema = self._get_tool_schema(tool_name)
+                        error_msg = {
+                            "success": False,
+                            "error": "ValidationError: Invalid tool arguments",
+                            "details": f"Your tool call had malformed arguments. The error was: {e.errors()[0]['msg'] if e.errors() else str(e)}",
+                            "invalid_args_received": tool_args,
+                            "expected_schema": f"Tool '{tool_name}' expects:\n{tool_schema}",
+                            "hint": "Please call the tool again with correct argument names and types. Check for typos in parameter names.",
+                        }
+                        
+                        self.logger.log("tool_retry_requested", {"tool_name": tool_name})
+                        
+                        results.append(ToolMessage(
+                            content=json.dumps(error_msg, ensure_ascii=False),
+                            name=tool_name,
+                            tool_call_id=tool_call.get("id", f"call_{tool_name}"),
+                        ))
+                        
+                    except Exception as e:
+                        # Other errors - also send to LLM
+                        error_result = {
+                            "success": False,
+                            "error": f"{type(e).__name__}: {str(e)}",
+                        }
+                        results.append(ToolMessage(
+                            content=json.dumps(error_result, ensure_ascii=False),
+                            name=tool_name,
+                            tool_call_id=tool_call.get("id", f"call_{tool_name}"),
+                        ))
                 else:
                     error_msg = f"Tool not found: {tool_name}"
                     results.append(ToolMessage(
@@ -339,7 +560,25 @@ class CityGridAgent:
                         tool_call_id=tool_call.get("id", f"call_{tool_name}"),
                     ))
 
-        return {"messages": results}
+        # Update checklist_done for executed tools (only if no validation error)
+        checklist_done = dict(state.get("checklist_done") or {})
+        if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            for i, tool_call in enumerate(last_message.tool_calls):
+                # Check if this tool had an error
+                if i < len(results):
+                    try:
+                        result_content = json.loads(results[i].content)
+                        if result_content.get("success", True):  # Mark done only if successful
+                            checklist_done[tool_call["name"]] = True
+                    except (json.JSONDecodeError, TypeError):
+                        # If we can't parse, assume success (old behavior)
+                        checklist_done[tool_call["name"]] = True
+            self.logger.log("checklist_done_updated", {
+                "checklist_done": checklist_done,
+                "checklist": state.get("checklist") or [],
+            })
+
+        return {"messages": results, "checklist_done": checklist_done}
 
     def _get_last_sql_data(self, messages) -> list | None:
         """Get data from the last successful SQL query in messages."""
@@ -354,7 +593,7 @@ class CityGridAgent:
         return None
 
     def _should_continue(self, state: AgentState) -> str:
-        """Decide whether to continue with tools or end."""
+        """Decide whether to continue with tools, go to reminder, or end."""
         messages = state["messages"]
         last_message = messages[-1]
 
@@ -366,6 +605,17 @@ class CityGridAgent:
             })
             return "tools"
 
+        checklist = state.get("checklist") or []
+        checklist_done = state.get("checklist_done") or {}
+        all_done = all(checklist_done.get(t, True) for t in checklist)
+
+        if checklist and not all_done:
+            self.logger.log("decision", {
+                "next_step": "reminder",
+                "reason": "Checklist not done, LLM replied with text only",
+            })
+            return "reminder"
+
         self.logger.log("decision", {
             "next_step": "end",
             "reason": "LLM provided final answer",
@@ -376,14 +626,29 @@ class CityGridAgent:
         """Run the agent on a question."""
         self.logger.clear()
         self.visualizations = []  # Clear visualizations from previous run
+        self._last_sql_data = None  # Full SQL result for create_map/create_chart; LLM gets truncated
 
         self.logger.log("user_input", {"question": question})
 
-        initial_state = {"messages": [HumanMessage(content=question)]}
-        result = self.graph.invoke(initial_state)
+        checklist = self._generate_checklist(question)
+        checklist_done = {name: False for name in checklist}
+        initial_state = {
+            "messages": [HumanMessage(content=question)],
+            "checklist": checklist,
+            "checklist_done": checklist_done,
+        }
+        # Cap steps to avoid infinite reminder loops and terminal freeze (each loop = agent + tools/reminder).
+        # If the terminal freezes, Ctrl+C and refresh the app; recursion_limit will stop the graph eventually.
+        recursion_limit = max(30, self.max_iterations * 3)
+        result = self.graph.invoke(
+            initial_state,
+            config={"recursion_limit": recursion_limit},
+        )
 
         messages = result["messages"]
         final_answer = self._extract_final_answer(messages)
+        out_checklist = result.get("checklist", checklist)
+        out_checklist_done = result.get("checklist_done", checklist_done)
 
         self.logger.log("final_answer", {"answer": final_answer[:300] if final_answer else ""})
 
@@ -393,11 +658,107 @@ class CityGridAgent:
             "visualizations": self.visualizations.copy(),  # Return stored visualizations
             "steps": self._extract_steps(messages),
             "logs": self.logger.get_logs(),
+            "checklist": out_checklist,
+            "checklist_done": out_checklist_done,
         }
 
+    def stream_run(self, question: str, result_holder: list | None = None):
+        """
+        Run the agent on a question, yielding markdown strings for each step (tool call / tool result).
+        Final result is appended to result_holder if provided.
+        """
+        self.logger.clear()
+        self.visualizations = []
+        self._last_sql_data = None
+
+        self.logger.log("user_input", {"question": question})
+
+        checklist = self._generate_checklist(question)
+        checklist_done = {name: False for name in checklist}
+        initial_state = {
+            "messages": [HumanMessage(content=question)],
+            "checklist": checklist,
+            "checklist_done": checklist_done,
+        }
+        recursion_limit = max(30, self.max_iterations * 3)
+        config = {"recursion_limit": recursion_limit}
+
+        prev_len = 0
+        last_state = None
+
+        try:
+            for state in self.graph.stream(
+                initial_state,
+                config=config,
+                stream_mode="values",
+            ):
+                last_state = state
+                messages = state.get("messages") or []
+                new_messages = messages[prev_len:]
+                for msg in new_messages:
+                    if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+                        for tc in msg.tool_calls:
+                            name = tc.get("name", "unknown")
+                            args = tc.get("args") or {}
+                            line = f"**{name}**"
+                            if name == "execute_sql" and args.get("query"):
+                                q = (args["query"] or "").strip()
+                                if len(q) > 80:
+                                    q = q[:80] + "..."
+                                line += f"\n\n```sql\n{q}\n```"
+                            yield f"🔧 {line}\n\n"
+                    elif isinstance(msg, ToolMessage):
+                        name = getattr(msg, "name", "unknown")
+                        yield f"✅ **{name}** completed\n\n"
+                prev_len = len(messages)
+
+            if last_state is None:
+                last_state = initial_state
+
+            messages = last_state.get("messages") or []
+            final_answer = self._extract_final_answer(messages)
+            out_checklist = last_state.get("checklist", checklist)
+            out_checklist_done = last_state.get("checklist_done", checklist_done)
+            self.logger.log("final_answer", {"answer": (final_answer or "")[:300]})
+
+            result = {
+                "answer": final_answer or "No answer generated",
+                "messages": messages,
+                "visualizations": self.visualizations.copy(),
+                "steps": self._extract_steps(messages),
+                "logs": self.logger.get_logs(),
+                "checklist": out_checklist,
+                "checklist_done": out_checklist_done,
+            }
+            if result_holder is not None:
+                result_holder.append(result)
+        except Exception as e:
+            err_result = {
+                "answer": f"Error: {e}",
+                "messages": [],
+                "visualizations": [],
+                "steps": [],
+                "logs": self.logger.get_logs(),
+                "checklist": checklist,
+                "checklist_done": checklist_done,
+                "error": str(e),
+            }
+            if result_holder is not None:
+                result_holder.append(err_result)
+            raise
+
     def _extract_final_answer(self, messages: list[BaseMessage]) -> str:
-        """Extract final answer from messages."""
-        # Last AI message content
+        """Extract final answer from messages. When there is a viz tool result, prefer the AI message after it (map/chart summary)."""
+        # If there is a create_map/create_chart tool result, prefer the first AI message with content after the last such result
+        last_viz_idx = -1
+        for i, msg in enumerate(messages):
+            if hasattr(msg, "name") and getattr(msg, "name", None) in self.VIZ_TOOLS:
+                last_viz_idx = i
+        if last_viz_idx >= 0:
+            for msg in messages[last_viz_idx + 1 :]:
+                if isinstance(msg, AIMessage) and msg.content:
+                    return msg.content
+        # Last AI message content (original behavior)
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and msg.content:
                 return msg.content
@@ -444,7 +805,15 @@ class CityGridAgent:
 def create_agent(
     model_name: str = "llama3.1:8b",
     verbose: bool = True,
+    provider: str = "ollama",
+    api_key: str | None = None,
     **kwargs
 ) -> CityGridAgent:
-    """Create a CityGrid agent instance."""
-    return CityGridAgent(model_name=model_name, verbose=verbose, **kwargs)
+    """Create a CityGrid agent instance. Use provider='openai' for ChatGPT API."""
+    return CityGridAgent(
+        model_name=model_name,
+        verbose=verbose,
+        provider=provider,
+        api_key=api_key,
+        **kwargs,
+    )

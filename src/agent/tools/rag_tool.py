@@ -46,7 +46,6 @@ def search_documentation(query: str) -> dict[str, Any]:
     try:
         rag = get_rag_system()
         results = rag.search_with_scores(query, k=3)
-        
         if not results:
             return {
                 "success": True,

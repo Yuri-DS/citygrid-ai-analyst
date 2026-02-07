@@ -6,7 +6,7 @@ Allows the agent to execute SQL queries against the CityGrid database.
 
 from typing import Any
 from langchain_core.tools import tool
-
+import re
 import sys
 from pathlib import Path
 
@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from database import get_connection, validate_sql
+from database.validator import DEFAULT_LIMIT
 
 
 # === Schema Description for LLM ===
@@ -79,6 +80,8 @@ def execute_sql(query: str) -> dict[str, Any]:
         - columns: list of column names
         - error: error message if failed
     """
+    # Guardrail: very small LIMIT (1-5) is too small for visualization; use config default
+    query = re.sub(r"\bLIMIT\s+(1|2|3|4|5)\b", f"LIMIT {DEFAULT_LIMIT}", query, flags=re.IGNORECASE)
     safe_query, validation = validate_sql(query, add_limit=True)
 
     if not validation.is_valid:

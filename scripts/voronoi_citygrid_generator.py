@@ -495,12 +495,12 @@ DOC_TEMPORAL_PATTERNS = """# Temporal Patterns
 
 def ensure_workspace_docs(docs_dir: Path) -> None:
     ensure_dir(docs_dir)
-    write_text_if_missing(docs_dir / "data_dictionary.md", DOC_DATA_DICTIONARY)
+    # write_text_if_missing(docs_dir / "data_dictionary.md", DOC_DATA_DICTIONARY)
     write_text_if_missing(docs_dir / "kpi_definitions.md", DOC_KPI_DEFINITIONS)
     write_text_if_missing(docs_dir / "sensor_specs.md", DOC_SENSOR_SPECS)
-    write_text_if_missing(docs_dir / "report_template.md", DOC_REPORT_TEMPLATE)
-    write_text_if_missing(docs_dir / "incident_policy.md", DOC_INCIDENT_POLICY)
-    write_text_if_missing(docs_dir / "road_network_analysis.md", DOC_ROAD_NETWORK_ANALYSIS)
+    # write_text_if_missing(docs_dir / "report_template.md", DOC_REPORT_TEMPLATE)
+    # write_text_if_missing(docs_dir / "incident_policy.md", DOC_INCIDENT_POLICY)
+    # write_text_if_missing(docs_dir / "road_network_analysis.md", DOC_ROAD_NETWORK_ANALYSIS)
     write_text_if_missing(docs_dir / "temporal_patterns.md", DOC_TEMPORAL_PATTERNS)
 
 
