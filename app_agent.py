@@ -11,8 +11,6 @@ import sys
 import json
 import requests
 import plotly.graph_objects as go
-import concurrent.futures
-import time
 
 # Add src to path
 src_path = Path(__file__).parent / "src"
@@ -25,13 +23,19 @@ from agent import create_agent
 DB_PATH = Path(__file__).parent / "data" / "citygrid.db"
 OLLAMA_BASE_URL = "http://localhost:11434"
 
-# Available models (add your custom models here)
+# Available models - Ollama (add your custom models here)
 AVAILABLE_MODELS = {
     "qwen2.5:3b": "Qwen 2.5 3B - Fast ⚡",
     "qwen2.5:7b": "Qwen 2.5 7B - Quality ⭐",
     "qwen2.5-7b-ctx16k:latest": "Qwen 2.5 7B 16K context",
-    "qwen2.5-7b-ctx32k:latest": "Qwen 2.5 7B 32K context",
+    "granite3-dense:8b-instruct-q3_K_M": "granite3",
+    "llama3.1:8b-instruct-q4_K_M": "llama3 instruct",
     "llama3.1:8b": "Llama 3.1 8B",
+}
+
+# ChatGPT (OpenAI API) models
+OPENAI_MODELS = {
+    "gpt-4o-mini": "GPT-4o mini - Fast & cheap"
 }
 
 # === Page Config ===
@@ -77,40 +81,16 @@ def init_database():
     return get_connection(DB_PATH)
 
 
-def get_agent(model_name: str):
-    cache_key = f"agent_{model_name}"
+def get_agent(model_name: str, provider: str = "ollama", api_key: str | None = None):
+    cache_key = f"agent_{provider}_{model_name}"
     if cache_key not in st.session_state:
-        st.session_state[cache_key] = create_agent(model_name=model_name, verbose=True)
+        st.session_state[cache_key] = create_agent(
+            model_name=model_name,
+            verbose=True,
+            provider=provider,
+            api_key=api_key,
+        )
     return st.session_state[cache_key]
-
-
-def safe_invoke(agent, prompt, timeout=600, retries=0):
-    """
-    Safely invoke agent with timeout.
-
-    Args:
-        timeout: Max seconds to wait (default 600 = 10 min for slow CPU models)
-        retries: Number of retries on failure (default 0 - no retry to avoid losing results)
-    """
-    for attempt in range(retries + 1):
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(agent.invoke, prompt)
-                return future.result(timeout=timeout)
-
-        except concurrent.futures.TimeoutError:
-            if attempt < retries:
-                print(f"[WARN] LLM timeout (attempt {attempt + 1}/{retries + 1}), retrying...")
-                time.sleep(2)
-                continue
-            raise TimeoutError(f"LLM did not respond within {timeout} seconds")
-
-        except Exception as e:
-            if attempt < retries:
-                print(f"[WARN] Error: {e}, retrying...")
-                time.sleep(2)
-                continue
-            raise
 
 
 # === Session State ===
@@ -123,11 +103,20 @@ if "agent_initialized" not in st.session_state:
 if "selected_model" not in st.session_state:
     st.session_state.selected_model = list(AVAILABLE_MODELS.keys())[0]
 
+if "provider" not in st.session_state:
+    st.session_state.provider = "ollama"
+
+if "openai_api_key" not in st.session_state:
+    st.session_state.openai_api_key = ""
+
+if "selected_openai_model" not in st.session_state:
+    st.session_state.selected_openai_model = "gpt-4o-mini"
+
 
 # === Display Functions ===
 
-def display_step(step: dict, container):
-    """Display a single reasoning step."""
+def display_step(step: dict, container, parent_message: dict | None = None):
+    """Display a single reasoning step. When parent has map/chart, do not show dataframe for execute_sql."""
     step_type = step.get("type")
 
     if step_type == "tool_call":
@@ -144,12 +133,35 @@ def display_step(step: dict, container):
         try:
             data = json.loads(result) if isinstance(result, str) else result
             if isinstance(data, dict) and "data" in data and data["data"]:
-                df = pd.DataFrame(data["data"][:5])
-                container.dataframe(df, use_container_width=True)
-                if data.get("row_count", 0) > 5:
-                    container.caption(f"... and {data['row_count'] - 5} more rows")
+                has_viz = parent_message and (parent_message.get("visualizations") or [])
+                if tool_name == "execute_sql" and has_viz:
+                    container.caption(f"({data.get('row_count', len(data['data']))} rows used for visualization)")
+                else:
+                    # #region debug log
+                    try:
+                        import time as _t
+                        with open(r"d:\CityGrid AI Analyst\.cursor\debug.log", "a", encoding="utf-8") as _f:
+                            _f.write(json.dumps({"location": "app_agent.py:display_step", "message": "rendering_dataframe", "data": {"tool_name": tool_name, "row_count": len(data.get("data", []))}, "hypothesisId": "C", "timestamp": round(_t.time() * 1000)}, ensure_ascii=False) + "\n")
+                    except Exception:
+                        pass
+                    # #endregion
+                    df = pd.DataFrame(data["data"][:5])
+                    container.dataframe(df, use_container_width=True)
+                    if data.get("row_count", 0) > 5:
+                        container.caption(f"... and {data['row_count'] - 5} more rows")
         except:
             pass
+
+
+def format_checklist_progress(checklist: list, checklist_done: dict) -> str:
+    """Format checklist progress as e.g. '✓ execute_sql, ○ create_map'."""
+    if not checklist:
+        return ""
+    parts = []
+    for name in checklist:
+        done = checklist_done.get(name, False)
+        parts.append(f"{'✓' if done else '○'} {name}")
+    return ", ".join(parts)
 
 
 def extract_steps_from_logs(logs) -> list[dict]:
@@ -223,50 +235,112 @@ with st.sidebar:
     st.divider()
     st.header("🤖 Agent")
 
-    ollama_running = check_ollama_running()
+    provider = st.radio(
+        "Provider",
+        options=["ollama", "openai"],
+        format_func=lambda x: "Ollama (local)" if x == "ollama" else "ChatGPT (OpenAI API)",
+        index=0 if st.session_state.provider == "ollama" else 1,
+        key="provider_radio",
+    )
+    if provider != st.session_state.provider:
+        st.session_state.provider = provider
+        st.rerun()
 
-    if not ollama_running:
-        st.error("❌ Ollama not running")
-        st.code("ollama serve", language="bash")
-        st.session_state.agent_initialized = False
-    else:
-        available_ollama_models = get_available_ollama_models()
-        model_names = list(AVAILABLE_MODELS.keys())
+    if provider == "ollama":
+        ollama_running = check_ollama_running()
 
-        current_model = st.session_state.selected_model
-        current_index = model_names.index(current_model) if current_model in model_names else 0
-
-        selected_model = st.selectbox(
-            "Model",
-            options=model_names,
-            index=current_index,
-            format_func=lambda x: AVAILABLE_MODELS.get(x, x),
-        )
-
-        if selected_model != st.session_state.selected_model:
-            old_cache_key = f"agent_{st.session_state.selected_model}"
-            st.session_state.pop(old_cache_key, None)
-            st.session_state.selected_model = selected_model
-            st.rerun()
-
-        model_available = is_model_available(selected_model)
-
-        if not model_available:
-            st.warning(f"⚠️ Model not found")
-            st.code(f"ollama pull {selected_model}", language="bash")
-            if available_ollama_models:
-                with st.expander("Available models"):
-                    for m in available_ollama_models:
-                        st.code(m)
+        if not ollama_running:
+            st.error("❌ Ollama not running")
+            st.code("ollama serve", language="bash")
             st.session_state.agent_initialized = False
         else:
+            available_ollama_models = get_available_ollama_models()
+            model_names = list(AVAILABLE_MODELS.keys())
+
+            current_model = st.session_state.selected_model
+            current_index = model_names.index(current_model) if current_model in model_names else 0
+
+            selected_model = st.selectbox(
+                "Model",
+                options=model_names,
+                index=current_index,
+                format_func=lambda x: AVAILABLE_MODELS.get(x, x),
+            )
+
+            if selected_model != st.session_state.selected_model:
+                old_cache_key = f"agent_ollama_{st.session_state.selected_model}"
+                st.session_state.pop(old_cache_key, None)
+                st.session_state.selected_model = selected_model
+                st.rerun()
+
+            model_available = is_model_available(selected_model)
+
+            if not model_available:
+                st.warning(f"⚠️ Model not found")
+                st.code(f"ollama pull {selected_model}", language="bash")
+                if available_ollama_models:
+                    with st.expander("Available models"):
+                        for m in available_ollama_models:
+                            st.code(m)
+                st.session_state.agent_initialized = False
+            else:
+                try:
+                    agent = get_agent(selected_model, provider="ollama")
+                    st.success(f"✅ Ready")
+                    st.session_state.agent_initialized = True
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+                    st.session_state.agent_initialized = False
+    else:
+        # ChatGPT (OpenAI API)
+        openai_models = list(OPENAI_MODELS.keys())
+        current_openai = st.session_state.selected_openai_model
+        openai_index = openai_models.index(current_openai) if current_openai in openai_models else 0
+        selected_openai_model = st.selectbox(
+            "ChatGPT model",
+            options=openai_models,
+            index=openai_index,
+            format_func=lambda x: OPENAI_MODELS.get(x, x),
+            key="openai_model_select",
+        )
+        if selected_openai_model != st.session_state.selected_openai_model:
+            old_cache_key = f"agent_openai_{st.session_state.selected_openai_model}"
+            st.session_state.pop(old_cache_key, None)
+            st.session_state.selected_openai_model = selected_openai_model
+            st.rerun()
+
+        api_key = st.session_state.openai_api_key
+        try:
+            api_key = st.secrets.get("openai_api_key", api_key)
+        except Exception:
+            pass
+        if not api_key:
+            key_input = st.text_input(
+                "OpenAI API key",
+                type="password",
+                placeholder="sk-...",
+                help="Or set OPENAI_API_KEY env or Streamlit secrets: openai_api_key",
+            )
+            if key_input:
+                st.session_state.openai_api_key = key_input
+                api_key = key_input
+                st.rerun()
+
+        if api_key:
             try:
-                agent = get_agent(selected_model)
-                st.success(f"✅ Ready")
+                agent = get_agent(
+                    st.session_state.selected_openai_model,
+                    provider="openai",
+                    api_key=api_key,
+                )
+                st.success(f"✅ Ready (ChatGPT)")
                 st.session_state.agent_initialized = True
             except Exception as e:
                 st.error(f"❌ Error: {e}")
                 st.session_state.agent_initialized = False
+        else:
+            st.info("Enter OpenAI API key to use ChatGPT.")
+            st.session_state.agent_initialized = False
 
     st.divider()
 
@@ -290,82 +364,70 @@ for msg_idx, message in enumerate(st.session_state.messages):
             for viz_idx, viz in enumerate(message["visualizations"]):
                 render_visualization(viz, key_prefix=f"hist_{msg_idx}_{viz_idx}")
 
+        # Show checklist progress (collapsed) for assistant messages
+        if message.get("role") == "assistant" and message.get("checklist"):
+            progress = format_checklist_progress(
+                message.get("checklist", []),
+                message.get("checklist_done", {}),
+            )
+            if progress:
+                with st.expander("Progress", expanded=False):
+                    st.caption(progress)
+
         # Show reasoning steps (collapsed)
         if "steps" in message and message["steps"]:
             with st.expander("🔍 Reasoning Steps"):
                 for step in message["steps"]:
-                    display_step(step, st)
+                    display_step(step, st, parent_message=message)
 
 # Chat input
 if prompt := st.chat_input("Ask about city data...", disabled=not st.session_state.agent_initialized):
-    # Add user message
     st.session_state.messages.append({"role": "user", "content": prompt})
 
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Get agent response
-    with st.chat_message("assistant"):
-        if st.session_state.agent_initialized:
+    if not st.session_state.agent_initialized:
+        st.warning("Agent not initialized. Check Ollama or API key.")
+        st.rerun()
+    else:
+        current_model = (
+            st.session_state.selected_openai_model
+            if st.session_state.provider == "openai"
+            else st.session_state.selected_model
+        )
+        api_key = None
+        if st.session_state.provider == "openai":
+            api_key = st.session_state.get("openai_api_key") or ""
             try:
-                agent = get_agent(st.session_state.selected_model)
-
-                with st.spinner("🤔 Thinking... (this may take a few minutes on CPU)"):
-                    start_time = time.time()
-                    result = safe_invoke(agent, prompt, timeout=600)  # 10 min for slow models
-                    elapsed = time.time() - start_time
-                    print(f"DEBUG: Agent completed in {elapsed:.1f}s")
-
-                # Extract from result
-                final_answer = result.get("answer", "No answer generated")
-                visualizations = result.get("visualizations", [])
-                logs = result.get("logs", [])
-
-                print(f"DEBUG: Got {len(visualizations)} visualization(s)")
-
-                # Extract steps
-                collected_steps = extract_steps_from_logs(logs)
-
-                # Display answer
-                st.markdown(final_answer)
-
-                # Display visualizations
-                for viz_idx, viz in enumerate(visualizations):
-                    render_visualization(viz, key_prefix=f"new_{viz_idx}")
-
-                # Save to session state
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": final_answer,
-                    "steps": collected_steps,
-                    "visualizations": visualizations
-                })
-
-            except TimeoutError as e:
-                error_msg = "⏰ **Timeout:** The model took too long. Try a simpler question or smaller model."
-                st.error(error_msg)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": error_msg,
-                    "steps": [],
-                    "visualizations": []
-                })
-
-            except Exception as e:
-                import traceback
-                error_msg = f"Error: {str(e)}"
-                print(f"ERROR: {traceback.format_exc()}")
-                st.error(error_msg)
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": error_msg,
-                    "steps": [],
-                    "visualizations": []
-                })
-        else:
-            st.warning("Agent not initialized. Check Ollama.")
-
-    st.rerun()
+                api_key = api_key or st.secrets.get("openai_api_key", "")
+            except Exception:
+                pass
+        agent = get_agent(
+            current_model,
+            provider=st.session_state.provider,
+            api_key=api_key if st.session_state.provider == "openai" else None,
+        )
+        result_holder = []
+        try:
+            with st.chat_message("assistant"):
+                st.write_stream(agent.stream_run(prompt, result_holder))
+        except Exception as e:
+            st.error(str(e))
+        if result_holder:
+            result = result_holder[0]
+            collected_steps = extract_steps_from_logs(result.get("logs", []))
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": result.get("answer", "No answer generated"),
+                "steps": collected_steps,
+                "visualizations": result.get("visualizations", []),
+                "checklist": result.get("checklist", []),
+                "checklist_done": result.get("checklist_done", {}),
+            })
+            if result.get("error"):
+                st.error(result["error"])
+        st.rerun()
 
 # # Example questions
 # if not st.session_state.messages:
