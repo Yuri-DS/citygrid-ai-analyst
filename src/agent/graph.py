@@ -382,12 +382,21 @@ class CityGridAgent:
         finally:
             _restore_torch_patch(orig_torch_classes)
 
-        # Strip hallucinated base64 images from response content
+        # Strip hallucinated base64 images from response content (e.g. ChatGPT embedding charts as markdown)
         if response.content:
+            # Markdown image links: ![alt](data:image/...base64...)
             cleaned = re.sub(
-                r'!\[[^\]]*\]\(data:image/[^)]+\)',
-                '[Chart should be created using create_chart tool]',
+                r'!\[\s*[^\]]*\]\s*\(\s*data:image/[^)]+\)',
+                '[Chart created via create_chart tool]',
                 response.content,
+                flags=re.IGNORECASE,
+            )
+            # Orphan data: URIs (no ![ ] wrapper)
+            cleaned = re.sub(
+                r'data:image/[^)]+\)',
+                '[Image removed]',
+                cleaned,
+                flags=re.IGNORECASE,
             )
             if cleaned != response.content:
                 response.content = cleaned
@@ -494,7 +503,7 @@ class CityGridAgent:
                                     "title": result.get("title", "Chart"),
                                     "chart_type": result.get("chart_type"),
                                 })
-                                # Send short summary to LLM
+                                # Short summary for LLM; instruction first so model does not waste tokens on base64
                                 llm_result = {
                                     "success": True,
                                     "message": f"Chart created: {result.get('title', 'Chart')}",
@@ -507,7 +516,6 @@ class CityGridAgent:
                                     "data": result["map_html"],
                                     "title": result.get("title", "Map"),
                                 })
-                                # Send short summary to LLM
                                 llm_result = {
                                     "success": True,
                                     "message": f"Map created: {result.get('title', 'Map')}",
@@ -518,7 +526,13 @@ class CityGridAgent:
                             else:
                                 llm_result = result
 
-                            llm_result_str = json.dumps(llm_result, ensure_ascii=False)
+                            # Prepend strong instruction so OpenAI does not generate base64 (saves tokens)
+                            viz_instruction = (
+                                "Reply in 1-2 short sentences, plain text only. Do NOT output any image, "
+                                "base64, or data: URI — that wastes thousands of tokens and is invalid. "
+                                "The chart/map is already shown by the system.\n\n"
+                            )
+                            llm_result_str = viz_instruction + json.dumps(llm_result, ensure_ascii=False)
                             self.logger.log("visualization_stored", {
                                 "type": self.visualizations[-1]["type"],
                                 "title": self.visualizations[-1]["title"],
