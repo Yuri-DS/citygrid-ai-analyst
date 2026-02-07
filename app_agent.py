@@ -137,14 +137,6 @@ def display_step(step: dict, container, parent_message: dict | None = None):
                 if tool_name == "execute_sql" and has_viz:
                     container.caption(f"({data.get('row_count', len(data['data']))} rows used for visualization)")
                 else:
-                    # #region debug log
-                    try:
-                        import time as _t
-                        with open(r"d:\CityGrid AI Analyst\.cursor\debug.log", "a", encoding="utf-8") as _f:
-                            _f.write(json.dumps({"location": "app_agent.py:display_step", "message": "rendering_dataframe", "data": {"tool_name": tool_name, "row_count": len(data.get("data", []))}, "hypothesisId": "C", "timestamp": round(_t.time() * 1000)}, ensure_ascii=False) + "\n")
-                    except Exception:
-                        pass
-                    # #endregion
                     df = pd.DataFrame(data["data"][:5])
                     container.dataframe(df, use_container_width=True)
                     if data.get("row_count", 0) > 5:
