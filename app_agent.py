@@ -301,38 +301,35 @@ with st.sidebar:
             st.session_state.selected_openai_model = selected_openai_model
             st.rerun()
 
-        api_key = st.session_state.openai_api_key
-        try:
-            api_key = st.secrets.get("openai_api_key", api_key)
-        except Exception:
-            pass
+        # manual entry
+        api_key = st.session_state.get("openai_api_key", "")
+
         if not api_key:
             key_input = st.text_input(
                 "OpenAI API key",
                 type="password",
                 placeholder="sk-...",
-                help="Or set OPENAI_API_KEY env or Streamlit secrets: openai_api_key",
+                help="Enter key manually to connect",
             )
             if key_input:
                 st.session_state.openai_api_key = key_input
-                api_key = key_input
                 st.rerun()
 
-        if api_key:
+            st.info("Enter OpenAI API key to use ChatGPT.")
+            st.session_state.agent_initialized = False
+        else:
+            # Проверка подключения только после ручного ввода (ключ уже сохранен в session_state)
             try:
                 agent = get_agent(
                     st.session_state.selected_openai_model,
                     provider="openai",
                     api_key=api_key,
                 )
-                st.success(f"✅ Ready (ChatGPT)")
+                st.success("✅ Ready (ChatGPT)")
                 st.session_state.agent_initialized = True
             except Exception as e:
                 st.error(f"❌ Error: {e}")
                 st.session_state.agent_initialized = False
-        else:
-            st.info("Enter OpenAI API key to use ChatGPT.")
-            st.session_state.agent_initialized = False
 
     st.divider()
 
