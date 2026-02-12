@@ -130,20 +130,24 @@ def display_step(step: dict, container, parent_message: dict | None = None):
     elif step_type == "tool_result":
         tool_name = step.get("tool_name", "unknown")
         result = step.get("result", "")
-        container.success(f"✅ **{tool_name}** completed")
         try:
             data = json.loads(result) if isinstance(result, str) else result
-            if isinstance(data, dict) and "data" in data and data["data"]:
-                has_viz = parent_message and (parent_message.get("visualizations") or [])
-                if tool_name == "execute_sql" and has_viz:
-                    container.caption(f"({data.get('row_count', len(data['data']))} rows used for visualization)")
-                else:
-                    df = pd.DataFrame(data["data"][:5])
-                    container.dataframe(df, use_container_width=True)
-                    if data.get("row_count", 0) > 5:
-                        container.caption(f"... and {data['row_count'] - 5} more rows")
-        except:
-            pass
+            if isinstance(data, dict) and data.get("success") is False:
+                err_msg = data.get("error", "Unknown error")
+                container.error(f"❌ **{tool_name}** failed: {err_msg}")
+            else:
+                container.success(f"✅ **{tool_name}** completed")
+                if isinstance(data, dict) and "data" in data and data["data"]:
+                    has_viz = parent_message and (parent_message.get("visualizations") or [])
+                    if tool_name == "execute_sql" and has_viz:
+                        container.caption(f"({data.get('row_count', len(data['data']))} rows used for visualization)")
+                    else:
+                        df = pd.DataFrame(data["data"][:5])
+                        container.dataframe(df, use_container_width=True)
+                        if data.get("row_count", 0) > 5:
+                            container.caption(f"... and {data['row_count'] - 5} more rows")
+        except Exception:
+            container.success(f"✅ **{tool_name}** completed")
 
 
 def format_checklist_progress(checklist: list, checklist_done: dict) -> str:
