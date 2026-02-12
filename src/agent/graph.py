@@ -235,7 +235,28 @@ class CityGridAgent:
         checklist_done = state.get("checklist_done") or {}
         remaining = [t for t in checklist if not checklist_done.get(t, True)]
         next_step = remaining[0] if remaining else ""
-        msg = f"Task not complete. The NEXT required step is: {next_step}. Call this tool now — do not call other tools first. Do not respond with only text."
+
+        # Check if the previous tool call had a validation error — give context
+        had_error = False
+        messages = state.get("messages") or []
+        for m in reversed(messages[-5:]):
+            if hasattr(m, "content") and isinstance(m.content, str) and "ValidationError" in m.content:
+                had_error = True
+                break
+
+        if had_error:
+            msg = (
+                f"Your previous {next_step} call failed due to a validation error. "
+                f"Do NOT describe the problem in text — instead, fix the arguments and call {next_step} again immediately. "
+                f"Read the error message carefully: it tells you exactly which parameters are required."
+            )
+        else:
+            msg = (
+                f"Task not complete. Remaining steps: {remaining}. "
+                f"Call {next_step} now with the correct arguments. "
+                f"Do not respond with only text — you MUST make a tool call."
+            )
+
         self.logger.log("reminder_sent", {"remaining": remaining})
         return {"messages": [HumanMessage(content=msg)]}
 
@@ -297,9 +318,17 @@ class CityGridAgent:
         checklist_done = state.get("checklist_done") or {}
         if checklist:
             remaining = [t for t in checklist if not checklist_done.get(t, True)]
+            done = [t for t in checklist if checklist_done.get(t, False)]
             if remaining:
                 next_step = remaining[0]
-                system_prompt += f"\n\nChecklist order: {checklist}. The NEXT required step is: {next_step}. You MUST call this tool now — do not call other tools (e.g. search_documentation) before it unless they are in the checklist. Do not respond with only text."
+                system_prompt += (
+                    f"\n\n## Current Progress"
+                    f"\nCompleted: {done if done else 'none'}"
+                    f"\nRemaining: {remaining}"
+                    f"\nNEXT STEP: {next_step}"
+                    f"\n\nYou MUST call {next_step} now. Do not respond with text only — that will be treated as task abandonment."
+                    f" If a previous tool call failed, read the error and fix the arguments."
+                )
 
         # Calculate prompt size
         def estimate_tokens(messages_list, system_prompt=None):
@@ -452,9 +481,47 @@ class CityGridAgent:
         results = []
 
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+            # --- Checklist order guard ---
+            # If LLM skips earlier checklist steps, block the call and redirect.
+            checklist = state.get("checklist") or []
+            checklist_done = state.get("checklist_done") or {}
+
             for tool_call in last_message.tool_calls:
                 tool_name = tool_call["name"]
                 tool_args = tool_call["args"]
+
+                if checklist and tool_name in checklist:
+                    skipped = []
+                    for step in checklist:
+                        if step == tool_name:
+                            break
+                        if not checklist_done.get(step, False):
+                            skipped.append(step)
+                    if skipped:
+                        next_required = skipped[0]
+                        warning_msg = {
+                            "success": False,
+                            "error": f"Skipped required step: {next_required}",
+                            "details": (
+                                f"You called {tool_name}, but {next_required} has not been completed yet. "
+                                f"Without {next_required}, your {tool_name} call is likely to produce incorrect results "
+                                f"(wrong column names, missing JOINs, bad aggregation). "
+                                f"Call {next_required} first, then use its results to make a correct {tool_name} call."
+                            ),
+                            "skipped_steps": skipped,
+                            "action_required": f"Call {next_required} now.",
+                        }
+                        self.logger.log("checklist_order_violation", {
+                            "called": tool_name,
+                            "skipped": skipped,
+                            "redirected_to": next_required,
+                        })
+                        results.append(ToolMessage(
+                            content=json.dumps(warning_msg, ensure_ascii=False),
+                            name=tool_name,
+                            tool_call_id=tool_call.get("id", f"call_{tool_name}"),
+                        ))
+                        continue
 
                 # Check if visualization tool called with empty data
                 if tool_name in self.VIZ_TOOLS:
@@ -696,7 +763,7 @@ class CityGridAgent:
         }
         # Cap steps to avoid infinite reminder loops and terminal freeze (each loop = agent + tools/reminder).
         # If the terminal freezes, Ctrl+C and refresh the app; recursion_limit will stop the graph eventually.
-        recursion_limit = max(30, self.max_iterations * 3)
+        recursion_limit = max(10, self.max_iterations * 3)
         result = self.graph.invoke(
             initial_state,
             config={"recursion_limit": recursion_limit},
@@ -737,7 +804,7 @@ class CityGridAgent:
             "checklist": checklist,
             "checklist_done": checklist_done,
         }
-        recursion_limit = max(30, self.max_iterations * 3)
+        recursion_limit = max(10, self.max_iterations * 3)
         config = {"recursion_limit": recursion_limit}
 
         prev_len = 0
@@ -766,7 +833,16 @@ class CityGridAgent:
                             yield f"🔧 {line}\n\n"
                     elif isinstance(msg, ToolMessage):
                         name = getattr(msg, "name", "unknown")
-                        yield f"✅ **{name}** completed\n\n"
+                        content = getattr(msg, "content", "") or ""
+                        try:
+                            data = json.loads(content) if isinstance(content, str) else content
+                            if isinstance(data, dict) and data.get("success") is False:
+                                err_msg = data.get("error", "Unknown error")
+                                yield f"❌ **{name}** failed: {err_msg}\n\n"
+                            else:
+                                yield f"✅ **{name}** completed\n\n"
+                        except Exception:
+                            yield f"✅ **{name}** completed\n\n"
                 prev_len = len(messages)
 
             if last_state is None:
