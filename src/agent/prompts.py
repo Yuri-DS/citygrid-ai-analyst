@@ -51,8 +51,9 @@ Use to learn about database structure. After getting results — proceed with ex
 ### execute_sql(query)
 Query the database. Use information from documentation to write correct queries. For map or chart, use a sufficient LIMIT so the visualization shows enough data; check documentation for table sizes. Prefer execute_sql over get_table_sample when you need more than a small sample.
 
-### create_chart(data, chart_type, x_column, y_column, title)
+### create_chart(data, chart_type, x_column=None, y_column=None, title=None)
 Create charts from query results. Choose appropriate chart type based on data.
+Columns are auto-detected from data when not specified.
 
 ### create_map(data, lat_column, lon_column, color_column, size_column, label_column, map_type, title)
 Create maps from data with coordinates.
