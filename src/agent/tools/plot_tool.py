@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 def create_chart(
     data: Union[str, list[dict]],
     chart_type: str,
-    x_column: str,
+    x_column: str = None,
     y_column: str = None,
     title: str = None,
     color_column: str = None
@@ -27,8 +27,10 @@ def create_chart(
         data: Data as JSON string OR list of dicts from SQL query result.
               Pass the "data" field from execute_sql result.
         chart_type: Type of chart - "bar", "line", "pie", "scatter", "histogram"
-        x_column: Column name for X axis (or labels for pie chart)
+        x_column: Column name for X axis (or labels for pie chart).
+                  Optional - auto-detected from data if not provided.
         y_column: Column name for Y axis (or values for pie chart). Optional for histogram.
+                  Optional - auto-detected from data if not provided.
         title: Chart title (optional)
         color_column: Column for color grouping (optional)
 
@@ -38,6 +40,7 @@ def create_chart(
     Example:
         After execute_sql returns {"success": true, "data": [...]},
         call: create_chart(data=[...], chart_type="bar", x_column="name", y_column="population")
+        For pie charts, columns are auto-detected: create_chart(data=[...], chart_type="pie")
     """
     try:
         # Parse data - accept both string and list
@@ -53,6 +56,15 @@ def create_chart(
             }
 
         df = pd.DataFrame(data_list)
+
+        # Auto-detect columns if not specified
+        if not x_column or not y_column:
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            non_numeric_cols = [c for c in df.columns if c not in numeric_cols]
+            if not x_column:
+                x_column = non_numeric_cols[0] if non_numeric_cols else df.columns[0]
+            if not y_column and numeric_cols:
+                y_column = numeric_cols[0]
 
         # Validate columns
         if x_column not in df.columns:
