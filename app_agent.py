@@ -43,10 +43,10 @@ OPENAI_MODELS = {
     "gpt-4o-mini": "GPT-4o mini - Fast & cheap",
     "gpt-4o": "GPT-4o - Balanced quality & speed",
     "gpt-4.1-mini": "GPT-4.1 mini - Fast reasoning",
-    "gpt-4.1": "GPT-4.1 - High quality",
-    "o3-mini": "o3-mini - Advanced reasoning (cheap)",
-    "gpt-5.2": "GPT-5.2 - best, last model & high value",
-    "gpt-5": "GPT-5 - high value",
+    # "gpt-4.1": "GPT-4.1 - High quality",
+    # "o3-mini": "o3-mini - Advanced reasoning (cheap)",
+    # "gpt-5.2": "GPT-5.2 - best, last model & high value",
+    # "gpt-5": "GPT-5 - high value",
 }
 
 # === Page Config ===
@@ -56,7 +56,6 @@ st.set_page_config(
     layout="wide"
 )
 
-st.write(st.secrets)
 # === Helper Functions ===
 
 def check_ollama_running() -> bool:
@@ -124,7 +123,8 @@ if "selected_model" not in st.session_state:
     st.session_state.selected_model = list(AVAILABLE_MODELS.keys())[0]
 
 if "provider" not in st.session_state:
-    st.session_state.provider = "ollama"
+    # st.session_state.provider = "ollama"
+    st.session_state.provider = "openai"
 
 if "openai_api_key" not in st.session_state:
     st.session_state.openai_api_key = ""
