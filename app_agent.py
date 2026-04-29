@@ -56,7 +56,7 @@ st.set_page_config(
     layout="wide"
 )
 
-
+st.secrets["openai_api_key"]
 # === Helper Functions ===
 
 def check_ollama_running() -> bool:
