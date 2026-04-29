@@ -326,7 +326,11 @@ with st.sidebar:
             st.rerun()
 
         # manual entry
-        api_key = st.session_state.get("openai_api_key", "")
+        # api_key = st.session_state.get("openai_api_key", "")
+        api_key = (
+            st.session_state.get("openai_api_key")
+            or st.secrets.get("openai_api_key", "")
+        )
 
         if not api_key:
             key_input = st.text_input(
