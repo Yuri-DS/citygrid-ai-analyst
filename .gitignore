@@ -1,0 +1,41 @@
+# --------------------
+# Python
+# --------------------
+__pycache__/
+*.py[cod]
+
+# --------------------
+# Virtual environment
+# --------------------
+.venv/
+venv/
+ENV/
+
+
+# --------------------
+# Generated outputs
+# --------------------
+outputs/generation_log.txt
+outputs/*.html
+outputs/*.png
+outputs/*.csv
+
+# --------------------
+# Temporary / debug scripts
+# --------------------
+tmp_*.py
+
+# --------------------
+# OS / IDE
+# --------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+/my/
+/tests/conftest.py
+/tests/test_agent_graph.py
+/tests/test_agent_tools.py
+/.streamlit/secrets.toml
+/data/
