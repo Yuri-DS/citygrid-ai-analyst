@@ -56,7 +56,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.secrets["openai_api_key"]
+st.write(st.secrets)
 # === Helper Functions ===
 
 def check_ollama_running() -> bool:
@@ -326,35 +326,35 @@ with st.sidebar:
             st.rerun()
 
         # manual entry
-        # api_key = st.session_state.get("openai_api_key", "")
-        api_key = (
-            st.session_state.get("openai_api_key")
-            or st.secrets.get("openai_api_key", "")
-        )
-
+        try:
+            api_key = st.secrets["openai_api_key"]
+        except Exception:
+            api_key = ""
+        
         if not api_key:
-            key_input = st.text_input(
+        
+            api_key = st.text_input(
                 "OpenAI API key",
                 type="password",
                 placeholder="sk-...",
-                help="Enter key manually to connect",
             )
-            if key_input:
-                st.session_state.openai_api_key = key_input
-                st.rerun()
-
-            st.info("Enter OpenAI API key to use ChatGPT.")
+        
+        if not api_key:
+        
+            st.warning("No OpenAI API key found")
             st.session_state.agent_initialized = False
+        
         else:
-            # Проверка подключения только после ручного ввода (ключ уже сохранен в session_state)
             try:
                 agent = get_agent(
                     st.session_state.selected_openai_model,
                     provider="openai",
                     api_key=api_key,
                 )
+        
                 st.success("✅ Ready (ChatGPT)")
                 st.session_state.agent_initialized = True
+        
             except Exception as e:
                 st.error(f"❌ Error: {e}")
                 st.session_state.agent_initialized = False
