@@ -1,118 +1,117 @@
-# 🏙️ CityGrid AI Analyst
+# CityGrid AI Analyst
 
-AI-агент для анализа городской инфраструктуры на естественном языке.
+Интеллектуальный AI-аналитик для городской инфраструктуры: принимает вопросы на естественном языке и возвращает аналитические ответы на основе SQL, RAG и визуализаций.
 
----
+## Статус проекта
 
-## 🚧 Раздел временно не ведётся до завершения базовой структуры проекта.
-## ~~🚀 Ближайшие задачи~~ 
+Проект завершен и готов к демонстрации как итоговое решение ВКР.
 
+## Что умеет система
 
-- [ ] *Изменить генерацию дорог. Генерируется слишком много Highway (ETA: 29.01.2026)*
-- [ ] Добавить визуализацию по точкам
+- Преобразует вопрос пользователя в план анализа и SQL-запросы.
+- Выполняет безопасные SQL-запросы к городской БД (SQLite).
+- Строит интерактивные графики (Plotly) и карты (Folium).
+- Использует RAG-поиск по доменной документации из `docs_workspace`.
+- Показывает промежуточные шаги рассуждения агента в интерфейсе.
+- Работает с двумя провайдерами LLM: локальный Ollama и облачный OpenAI.
 
-## Выполнено
-- [x] Исправить генерацию районов, чтобы не были внутри друг друга. Решение через алгоритм Вороного (done: 21.01.2026)
-- [x] Изменить отрисовку карты районов (done: 21.01.2026)
-- [x] УДАЛИЛ (ОТЛОЖЕНО ДО ~7 ФАЗЫ) Исправить баг BUG-001 — Example Questions (ETA: 27.01.2026)
-- [x] **Починить вывод ответа, графиков, карты (bug-002)**
----
+## Архитектура решения
 
-## О проекте
+Проект построен на модульном агенте (`LangGraph`) с набором инструментов:
 
-CityGrid AI Analyst — это интеллектуальный помощник, который позволяет задавать вопросы о городских данных на естественном языке и получать ответы на основе реальных данных из базы.
+- `sql_tool` - выполнение и контроль SQL-запросов;
+- `plot_tool` - генерация графиков из табличных результатов;
+- `map_tool` - построение карт по геоданным;
+- `rag_tool` - извлечение контекста из документов.
 
-**Возможности:**
-- 💬 Вопросы на естественном языке → SQL запросы
-- 🔍 Автоматическая валидация и безопасность SQL
-- 📊 Анализ: районы, сенсоры, обращения граждан, транспорт
-- 📈 Графики (Plotly) и карты (Folium)
-- 📚 RAG — поиск по документации
-- 🤖 Прозрачный reasoning — видно как агент думает
+Пользователь взаимодействует с системой через Streamlit-интерфейс (`app_agent.py`), где отображаются:
 
-## Технологии
+- диалог,
+- ответ агента,
+- визуализации,
+- прогресс выполнения шагов и tool-calls.
 
-- **LLM**: Ollama (Llama 3.1, Qwen 2.5, Granite) или OpenAI (GPT-4o mini)
-- **Agent Framework**: LangGraph
-- **Database**: SQLite
-- **RAG**: ChromaDB
-- **UI**: Streamlit
+## Технологический стек
 
-## Быстрый старт
+- `Python 3.10+`
+- `Streamlit`
+- `LangGraph / LangChain`
+- `SQLite + SQLAlchemy`
+- `Plotly`
+- `Folium`
+- `ChromaDB` (RAG)
+- `Ollama` и `OpenAI API`
+
+## Быстрый запуск
 
 ```bash
-# 1. Клонировать репозиторий
 git clone https://github.com/your-username/citygrid-ai-analyst.git
 cd citygrid-ai-analyst
 
-# 2. Создать виртуальное окружение
 python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
+.venv\Scripts\activate
 
-# 3. Установить зависимости
 pip install -r requirements.txt
-
-# 4. Векторизировать документы (RAG)
 python scripts/init_rag.py
+```
 
-# 5. Запустить Ollama (в отдельном терминале)
-ollama pull llama3.1:8b
+### Вариант 1: локальная модель через Ollama
+
+```bash
 ollama serve
-
-# 6. Запустить приложение
+ollama pull qwen2.5:7b
 streamlit run app_agent.py
 ```
 
-## Структура проекта
+### Вариант 2: OpenAI API
 
+1. Запустите приложение:
+
+```bash
+streamlit run app_agent.py
 ```
+
+2. В Sidebar выберите `ChatGPT (OpenAI API)`.
+3. Введите API-ключ и модель (например, `gpt-4o-mini`).
+
+## Структура репозитория
+
+```text
 citygrid-ai-analyst/
-├── app_agent.py              # Streamlit приложение
-├── src/
-│   ├── agent/                # LangGraph агент
-│   │   ├── graph.py          # Основная логика
-│   │   ├── prompts.py        # Системные промпты
-│   │   └── tools/            # Инструменты
-│   │       ├── sql_tool.py   # SQL запросы
-│   │       ├── plot_tool.py  # Графики Plotly
-│   │       ├── map_tool.py   # Карты Folium
-│   │       └── rag_tool.py   # RAG поиск
-│   ├── database/             # Работа с БД
-│   │   ├── connection.py
-│   │   └── validator.py
-│   └── rag/                  # Векторное хранилище
-│       └── vector_store.py
-├── docs_workspace/           # Документация для RAG
-├── data/
-│   └── citygrid.db           # База данных
+├── app_agent.py                  # Основной Streamlit UI для AI-аналитика
+├── app.py                        # Ранний SQL-прототип (legacy)
 ├── configs/
-│   ├── agent_config.yaml
-│   └── citygrid_generation.yaml
-└── scripts/
-    ├── init_rag.py           # Инициализация RAG
-    ├── citygrid_generator.py # Генерация данных
-    └── validate_dataset.py   # Валидация датасета
+│   ├── agent_config.yaml         # Параметры LLM и поведения агента
+│   └── citygrid_generation.yaml  # Настройки генерации городского датасета
+├── scripts/
+│   ├── init_rag.py
+│   ├── citygrid_generator.py
+│   ├── voronoi_citygrid_generator.py
+│   └── validate_dataset.py
+├── src/
+│   ├── agent/
+│   │   ├── graph.py
+│   │   ├── prompts.py
+│   │   └── tools/
+│   ├── database/
+│   └── rag/
+└── docs_workspace/               # Документы для RAG-индекса
 ```
 
-## Примеры вопросов
+## Примеры запросов
 
-- "How many districts are in the city?"
-- "Show me top 5 districts by population"
-- "How many sensors of each type are there?"
-- "What is the total population of all districts?"
-- "Show a map of districts with population density"
-- "Plot sensor readings over time"
+- `How many districts are in the city?`
+- `Show top 5 districts by population`
+- `Plot monthly dynamics of citizen requests`
+- `Build a map of districts with population density`
+- `Compare sensor types by number of active devices`
 
-## Известные баги
+## Ограничения и замечания
 
-См. [BUGS.md](BUGS.md)
+- Для локального режима требуется установленный и запущенный Ollama.
+- Для облачного режима необходим валидный OpenAI API key.
+- Полнота и точность ответа зависят от качества данных и формулировки запроса.
 
-## Статус
+## Научный контекст
 
-🚧 В разработке (Фаза 3 — визуализация)
-
-## Автор
-
-Выпускная квалификационная работа магистратуры.  
-Тема: "Разработка AI-агента-аналитика на основе предобученной языковой модели"
+Проект реализован как выпускная квалификационная работа магистратуры по теме разработки AI-агента-аналитика на основе предобученных языковых моделей для задач городской аналитики.
